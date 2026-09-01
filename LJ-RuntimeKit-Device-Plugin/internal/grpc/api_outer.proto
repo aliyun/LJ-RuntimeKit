@@ -1,0 +1,292 @@
+// Copyright (c) 2024-2026 Alibaba Cloud.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+import "google/protobuf/wrappers.proto";
+option go_package = "./";
+
+
+service XpuDeviceManagerService {
+  // 设备分配
+  rpc Allocate(AllocateRequest) returns (AllocateResponse);
+  // 查询支持的设备类型
+  rpc ListSupportedXPUType(XPUTypeRequest) returns (XPUTypeResponse);
+  // 监听设备列表
+  rpc ListAndWatch(ListAndWatchRequest) returns (stream ListAndWatchResponse);
+  // 查询已分配资源，初始化
+  rpc ListInitialEnv(ListInitialEnvRequest) returns (ListInitialEnvResponse);
+
+  // 释放容器设备分配记录（与 api_inner 的 DeleteContainerDevices 逻辑对齐）
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+
+  // exporter指标相关接口
+  rpc ExporterGetConfig(ExporterRequest) returns (ExporterConfigResponse) {};
+  rpc ExporterGetStatus(ExporterRequest) returns (ExporterStatusResponse) {};
+  rpc ExporterGetDataList(ExporterDataRequest) returns (ExporterDataResponse) {};
+  rpc ExporterDataStream(ExporterDataRequest) returns (stream ExporterDataResponse) {};
+
+  rpc ListGpuInfo(ExporterRequest) returns (ListGpuInfoResponse) {};
+
+  // 迁移相关接口
+  // Checkpoint flow: generates CRI OCI checkpoint image and streams tar bundle.
+  rpc Checkpoint(CheckpointRequest) returns (stream CheckpointResponse);
+  // Load a checkpoint OCI image tar into local containerd (RestoreCPU namespace).
+  rpc RestoreCPU(RestoreCPURequest) returns (RestoreCPUResponse);
+  // Restore XPU state via cr-tool after container is running.
+  rpc RestoreXPU(RestoreXPURequest) returns (RestoreXPUResponse);
+}
+
+enum XPUType {
+  GPU = 0;
+  PPU = 1;
+  AMD = 2;
+  DCU = 3;
+}
+
+enum FeatureFlag {
+  TroubleShooting = 0; // 使能在线profiling
+}
+
+enum TopologyMode {
+  Card = 0;
+  Local = 1;
+  Remote = 2;
+}
+
+enum RuntimeMode {
+  RUNC = 0;
+  RUND = 1;
+  VM = 2;
+}
+
+enum ExporterType {
+  Collector = 0;
+  Detector  = 1;
+}
+
+enum ExporterRunningMode
+{
+  RunningRemote = 0;
+  RunningLocal = 1;
+}
+
+enum ExporterRunningStatus
+{
+  ExportRunning = 0;
+  ExportError   = 1;
+}
+
+enum ExporterDataSource
+{
+  CacheData    = 0;
+  RealTimeData = 1;
+}
+
+message XPUTypeRequest {}
+
+message XPUTypeResponse {
+  int32 status = 1;
+  string message = 2;
+  repeated XPUType supportedType = 3;
+}
+
+message Device {
+  string id = 1;
+  string health = 2;
+  uint32 totalCore = 3;
+  uint32 totalMemory = 4;
+  map<string, string> extenderResources = 5;
+}
+
+message ListAndWatchRequest {}
+
+message ListAndWatchResponse {
+  repeated Device devices = 1;
+}
+
+message AllocateRequest {
+  string id = 1;
+  RuntimeMode runtimeMode = 2;
+  map<int32, bool> featureGates = 3;
+  map<int32, string> topology = 4;
+  map<string, string> annotations = 5;  // containerID => XXXXXXX
+  repeated AllocatedDevices devices = 6;
+}
+
+message AllocatedDevices {
+  google.protobuf.UInt32Value minor = 1;
+  google.protobuf.UInt32Value core = 2;
+  google.protobuf.UInt32Value memory = 3;
+  google.protobuf.UInt32Value slice = 4;
+  google.protobuf.UInt32Value possibility = 5;
+  google.protobuf.UInt32Value factor = 6;
+  map<string, string> extender = 7;
+
+}
+
+message AllocateResponse {
+  int32 status = 1;
+  string message = 2;
+  map<string, string> annotations = 3;
+  map<string, string> labels = 4;
+}
+
+message ListInitialEnvRequest {}
+
+message ReleaseRequest {
+  string id = 1;
+}
+
+message ReleaseResponse {
+  int32 status = 1;
+  string message = 2;
+}
+
+message Resource {
+  string id = 1;
+  string name = 2;
+  string nameSpace = 3;
+  map<string, string> annotations = 4;
+  map<string, string> extender = 5;
+}
+
+message ListInitialEnvResponse {
+  int32 status = 1;
+  string message = 2;
+  repeated Resource resources = 4;
+}
+
+message ExporterRequest {
+  ExporterType exporterType = 1;
+}
+
+message ExporterConfigResponse {
+  int32 status = 1;
+  string message = 2;
+  ExporterType exportType = 3;
+  int32 interval = 4;
+  ExporterRunningMode runningMode = 5;
+  repeated int32 suptFieldID = 6;
+  repeated uint32 gpuID = 7;
+}
+
+message ExporterStatusResponse {
+  int32 status = 1;
+  string message = 2;
+  ExporterType exportType = 3;
+  ExporterRunningStatus runningStatus = 4;
+}
+
+message ExporterDataRequest {
+  ExporterType exportType   = 1;
+  ExporterDataSource source = 2;
+  repeated int32  fieldID  = 3;
+  repeated uint32  gpuID    = 4;
+  //bool getVmData = 4;
+}
+
+message ExporterDataResponse {
+  message ExporterData {
+    bool eGpu = 1;
+    bool full = 2;
+    int32  fieldID = 3;
+    string value = 4;
+    string uuid = 5;
+    string id = 6;
+    string model = 7;
+    string migProf = 8;
+    string giID = 9;
+    string ciID = 10;
+    string extraMsg = 11;
+    string cId = 12;
+    int64  time = 13;
+    uint32 pid = 14;
+    string pName = 15;
+    string cgroup = 16;
+    map<string, string> labels = 17;
+  }
+
+  int32 status = 1;
+  string message = 2;
+  ExporterType exportType = 3;
+  repeated ExporterData dataList = 4;
+}
+
+message ListGpuInfoResponse {
+  message GpuInfo {
+    uint32 gpuID = 1;
+    string uuid = 2;
+    string modelName = 3;
+    string SerialNumber = 4;
+    string busId = 5;
+    bool   migEnable = 6;
+
+    uint32  slice  = 7;
+    uint32  core   = 8;
+    uint64  memory = 9;
+    map<string, string> extensionResources = 10;
+  }
+
+  int32 status = 1;
+  string message = 2;
+  string driverVersion = 3;
+  XPUType  xpuType = 4;
+  uint32   count   = 5;
+  repeated GpuInfo gpu = 6;
+}
+
+// CheckpointRequest triggers the checkpoint flow:
+// cr-tool (xpu, with rootfs) + containerd Checkpoint API + repack to CRI OCI image
+// + stream tar bundle (xpu/ + image.tar).
+message CheckpointRequest {
+  string id = 1;
+  map<string, string> options = 2;
+}
+
+// CheckpointResponse is streamed back with the tar bundle data.
+// The bundle, when extracted, contains:
+//   xpu/        (cr-tool XPU device state)
+//   image.tar   (cri-o standard OCI checkpoint image)
+// Both sit side-by-side in the extraction directory.
+// The final message carries the checkpoint_image_name and original_image metadata.
+message CheckpointResponse {
+  int32 status = 1;
+  string message = 2;
+  bytes data_chunk = 3;
+  // metadata is sent in the final message
+  string snapshot_name = 4;
+}
+
+// RestoreCPURequest asks XDM to load an OCI image tar into the local containerd
+// under the namespace configured via XDM command-line options (default k8s.io).
+message RestoreCPURequest {
+  string snapshot_path = 1;
+}
+
+message RestoreCPUResponse {
+  int32 status = 1;
+  string message = 2;
+}
+
+// RestoreXPURequest asks XDM to restore XPU state via cr-tool against a running container.
+message RestoreXPURequest {
+  string container_id = 1;
+  string snapshot_path = 2;
+  map<string, string> options = 3;
+}
+
+message RestoreXPUResponse {
+  int32 status = 1;
+  string message = 2;
+}

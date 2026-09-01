@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lj-runtimekit-exporter-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: lj-runtimekit-exporter
+    app.kubernetes.io/component: "lj-runtimekit-exporter"
+data:
+  # Cross-component protocol constants consumed by the exporter loader
+  # (mounted at /etc/aliyun-gpu-protocol/protocol.yaml). Flat dot-separated
+  # keys, single-level map[string]string. Missing/empty values fall back to the
+  # compiled-in defaults.
+  protocol.yaml: |
+    # APIServer channel resource names
+    resources.memory: "aliyun.com/gpu-memory"
+    resources.core: "aliyun.com/gpu-core"
+    resources.slice: "aliyun.com/gpu-slice"
+    resources.gpu: "aliyun.com/gpu"
+    resources.nvidia: "nvidia.com/gpu"
+    # PodResources channel resource names
+    resources.podresources.nvidia: "nvidia.com/gpu"
+    resources.podresources.gpu: "aliyun.com/gpu"
+    resources.podresources.mig-prefix: "nvidia.com/mig-"
+    # Pod annotation keys
+    annotations.gpu-idx-list: "ALIYUN_COM_GPU_IDX_LIST"
+    annotations.gpu-mem-idx-legacy: "ALIYUN_COM_GPU_MEM_IDX"
+    annotations.mig-ci-uuid: "aliyun.com/mig-ci-uuid"

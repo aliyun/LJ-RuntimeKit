@@ -1,0 +1,8 @@
+.idea
+PACK/
+docs
+amp-device-plugin
+FIX_GRPC_PACKAGE.md
+.go-version
+vendor/
+*.tar

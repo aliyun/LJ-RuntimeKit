@@ -1,0 +1,64 @@
+/*
+Copyright (c) 2024-2026 Alibaba Cloud.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// config_service.proto
+// amp-config-daemon gRPC 接口定义
+// 提供 3 个 RPC：Enable（开启 eKitC）、Disable（关闭 eKitC）、QueryStatus（查询状态）
+
+syntax = "proto3";
+
+package configpb;
+
+option go_package = "github.com/lj-runtimekit/controller/pkg/configpb";
+
+// AmpConfigService 提供 AMP eKitC 使能管理能力
+service AmpConfigService {
+  // Enable 开启 eKitC
+  rpc Enable(EnableRequest) returns (EnableResponse);
+  // Disable 关闭 eKitC
+  rpc Disable(DisableRequest) returns (DisableResponse);
+  // QueryStatus 查询当前 eKitC 是否已开启
+  rpc QueryStatus(QueryStatusRequest) returns (QueryStatusResponse);
+}
+
+message EnableRequest {}
+
+message EnableResponse {
+  int32 status = 1;       // 0=成功, 非0=失败
+  string message = 2;
+  string stdout = 3;
+  string stderr = 4;
+  int32 exit_code = 5;
+  int64 duration_ms = 6;
+}
+
+message DisableRequest {}
+
+message DisableResponse {
+  int32 status = 1;
+  string message = 2;
+  string stdout = 3;
+  string stderr = 4;
+  int32 exit_code = 5;
+  int64 duration_ms = 6;
+}
+
+message QueryStatusRequest {}
+
+message QueryStatusResponse {
+  bool enabled = 1;       // eKitC 是否开启
+  string message = 2;
+}

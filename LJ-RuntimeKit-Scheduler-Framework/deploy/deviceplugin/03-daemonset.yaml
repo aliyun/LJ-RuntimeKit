@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lj-runtimekit-device-plugin-ds
+  namespace: kube-system
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  selector:
+    matchLabels:
+      component: lj-runtimekit-device-plugin
+      name: lj-runtimekit-device-plugin-ds
+      type: lj-runtimekit
+  template:
+    metadata:
+      labels:
+        component: lj-runtimekit-device-plugin
+        name: lj-runtimekit-device-plugin-ds
+        type: lj-runtimekit
+
+    spec:
+      runtimeClassName: lj-runtime
+      priorityClassName: system-node-critical
+      serviceAccountName: lj-runtimekit-device-plugin
+      hostNetwork: true
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+        key: node-role.kubernetes.io/master
+      nodeSelector:
+        lj_runtimekit_enable: "true"
+      initContainers:
+      - name: wait-xdm-ready
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.0-k8s1.28"
+        command:
+          - lj-runtimekit-device-plugin
+          - --check-ready
+          - --retry-interval=500ms
+        volumeMounts:
+          - name: device-plugin-sockets
+            mountPath: /run/amp/eKitC/xdm/sockets
+      containers:
+      - name: lj-runtimekit-device-plugin
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.0-k8s1.28"
+        imagePullPolicy: IfNotPresent
+        command:
+          - lj-runtimekit-device-plugin
+          - --logtostderr
+        resources:
+          limits:
+            memory: "300Mi"
+            cpu: "300m"
+          requests:
+            memory: "300Mi"
+            cpu: "300m"
+        env:
+        - name: LOAD_XPU_LIBS
+          value: "1"
+        - name: KUBECONFIG
+          value: /etc/kubernetes/kubelet.conf
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - name: device-plugin
+            mountPath: /var/lib/kubelet/device-plugins
+          - name: device-plugin-sockets
+            mountPath: /run/amp/eKitC/xdm/sockets
+          - name: protocol-config
+            mountPath: /etc/aliyun-gpu-protocol/protocol.yaml
+            subPath: protocol.yaml
+            readOnly: true
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: device-plugin-sockets
+          hostPath:
+            path: /run/amp/eKitC/xdm/sockets
+        - name: protocol-config
+          configMap:
+            name: lj-runtimekit-device-plugin-config
+            optional: true

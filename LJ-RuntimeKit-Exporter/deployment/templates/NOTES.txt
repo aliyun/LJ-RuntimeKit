@@ -1,0 +1,15 @@
+1. Get the application URL by running these commands:
+{{- if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ include "lj-runtimekit-exporter.namespace" . }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "lj-runtimekit-exporter.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ include "lj-runtimekit-exporter.namespace" . }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT/metrics
+{{- else if contains "LoadBalancer" .Values.service.type }}
+     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+           You can watch the status of by running 'kubectl get --namespace {{ include "lj-runtimekit-exporter.namespace" . }} svc -w {{ include "lj-runtimekit-exporter.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ include "lj-runtimekit-exporter.namespace" . }} {{ include "lj-runtimekit-exporter.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:{{ .Values.service.port }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+  export POD_NAME=$(kubectl get pods -n {{ include "lj-runtimekit-exporter.namespace" . }} -l "app.kubernetes.io/name={{ include "lj-runtimekit-exporter.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl -n {{ include "lj-runtimekit-exporter.namespace" . }} port-forward $POD_NAME 9501:{{ .Values.service.port }} &
+  echo "Visit http://127.0.0.1:9501/metrics to use your application"
+{{- end }}

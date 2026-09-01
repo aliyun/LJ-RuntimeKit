@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lj-runtimekit-controller
+  namespace: lj-runtimekit-system
+  labels:
+    app.kubernetes.io/name: lj-runtimekit-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lj-runtimekit-controller-role
+rules:
+  # Node permissions - watch, get, update nodes (update needed for annotations)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Job permissions - create, get, list, watch, delete jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Event permissions - create and patch events for node events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Leader election permissions
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lj-runtimekit-controller-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lj-runtimekit-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: lj-runtimekit-controller
+    namespace: lj-runtimekit-system

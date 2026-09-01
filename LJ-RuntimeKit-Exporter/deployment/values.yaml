@@ -1,0 +1,4 @@
+image:
+  repository: registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-exporter
+  pullPolicy: IfNotPresent
+  tag: v1.0.0

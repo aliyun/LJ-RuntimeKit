@@ -1,0 +1,36 @@
+ARG GOLANG_VERSION
+# Builder image. The official golang image is used because this project needs
+# cgo (DCGM / NVML bindings) and therefore a C toolchain; the internal
+# eflops-amp/golang:1.21.13 mirror ships without gcc and with CGO_ENABLED=0.
+# Override with --build-arg BUILDER_IMAGE=<your mirror> if needed.
+ARG BUILDER_IMAGE=golang:${GOLANG_VERSION}
+FROM ${BUILDER_IMAGE} AS builder
+WORKDIR /go/src/exporter
+
+COPY . .
+
+ARG GOPROXY="https://mirrors.aliyun.com/goproxy/,https://goproxy.cn/,direct"
+ENV GOPROXY=${GOPROXY}
+ENV GO111MODULE="on"
+
+# The repo does not ship a vendor/ directory; materialise it from the module
+# proxy so the build below resolves dependencies from vendor/.
+RUN go mod vendor
+
+ARG AMPERF_VERSION
+# Mirrors the `build` target in the Makefile. Invoked directly rather than via
+# `make` because the builder image does not ship make.
+RUN cd cmd/exporter \
+ && go build -mod=vendor -o exporter \
+        -ldflags "-X 'main.BuildVersion=${AMPERF_VERSION}'" -buildvcs=false
+
+FROM registry.cn-hangzhou.aliyuncs.com/eflops-amp/ubuntu:22.04
+LABEL io.k8s.display-name="lj-runtimekit-exporter"
+
+COPY --from=builder /go/src/exporter/cmd/exporter/exporter /usr/local/harp/amperf/
+COPY etc /usr/local/harp/etc
+
+RUN apt-get update && apt-get install -y --no-install-recommends dmidecode
+
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/harp/amperf/exporter"]

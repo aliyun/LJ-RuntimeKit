@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lj-runtimekit-exporter-ds
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: lj-runtimekit-exporter
+    app.kubernetes.io/component: "lj-runtimekit-exporter"
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lj-runtimekit-exporter
+      app.kubernetes.io/component: "lj-runtimekit-exporter"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lj-runtimekit-exporter
+        app.kubernetes.io/component: "lj-runtimekit-exporter"
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: lj-runtimekit-exporter
+      tolerations:
+      - effect: "NoSchedule"
+        key: "node-role.kubernetes.io/master"
+        operator: "Exists"
+      nodeSelector:
+        lj_runtimekit_enable: "true"
+      volumes:
+      - name: "xdm-grpc"
+        hostPath:
+          path: "/run/amp/eKitC/xdm/sockets/"
+      - name: pod-resources
+        hostPath:
+          path: /var/lib/kubelet/pod-resources
+      # Protocol constants ConfigMap (externalized cross-component keys).
+      # optional so the pod still starts when the ConfigMap is absent; the
+      # exporter then falls back to compiled-in defaults.
+      - name: protocol-config
+        configMap:
+          name: lj-runtimekit-exporter-config
+          optional: true
+      containers:
+      - name: exporter
+        securityContext:
+          privileged: true
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-exporter:1.13.0-k8s1.28"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: "AMPERF_EXPORTER_LISTEN"
+          value: ":9501"
+        - name: "AMPERF_GRPC_PATH"
+          value: "/run/amp/eKitC/xdm/sockets/dp2mgr.sock"
+        - name: "AMPERF_EXPORTER_INTERVAL"
+          value: "10000"
+        - name: "AMPERF_OUTPUT_FORMAT"
+          value: "kubergpu"
+        - name: "AMPERF_DATA_ACQ_MODE"
+          value: "data-push"
+        - name: "AMPERF_POD_COLLECTOR_TYPE"
+          value: "kubelet-http"
+        - name: "AMPERF_COLLECTORS_FILE"
+          value: "amperf-exporter-counters.csv"
+        ports:
+        - name: "metrics"
+          containerPort: 9501
+        volumeMounts:
+        - name: xdm-grpc
+          mountPath: "/run/amp/eKitC/xdm/sockets/"
+        - name: pod-resources
+          mountPath: /var/lib/kubelet/pod-resources
+        # Mount only the protocol.yaml key to the well-known path read by the loader.
+        - name: protocol-config
+          mountPath: /etc/aliyun-gpu-protocol/protocol.yaml
+          subPath: protocol.yaml
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9501
+          initialDelaySeconds: 45
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9501
+          initialDelaySeconds: 45

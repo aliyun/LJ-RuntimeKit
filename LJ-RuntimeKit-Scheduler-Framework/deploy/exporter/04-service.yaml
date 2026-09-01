@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lj-runtimekit-exporter-svc
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: lj-runtimekit-exporter
+    app.kubernetes.io/component: "lj-runtimekit-exporter"
+    app: "lj-runtimekit-exporter"
+spec:
+  type: ClusterIP
+  ports:
+  - name: "metrics"
+    port: 9501
+    targetPort: 9501
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: lj-runtimekit-exporter

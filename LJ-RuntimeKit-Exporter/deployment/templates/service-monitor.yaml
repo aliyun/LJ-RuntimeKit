@@ -1,0 +1,28 @@
+{{- if .Values.serviceMonitor.enabled }}
+
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: lj-runtimekit-exporter-svc-monitor
+  namespace: {{ include "lj-runtimekit-exporter.namespace" . }}
+  labels:
+    {{- include "lj-runtimekit-exporter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: "lj-runtimekit-exporter"
+    {{- if .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml .Values.serviceMonitor.additionalLabels | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "lj-runtimekit-exporter.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: "lj-runtimekit-exporter"
+  namespaceSelector:
+    matchNames:
+    - "{{ include "lj-runtimekit-exporter.namespace" . }}"
+  endpoints:
+  - port: "metrics"
+    path: "/metrics"
+    interval: "{{ .Values.serviceMonitor.interval }}"
+    honorLabels: {{ .Values.serviceMonitor.honorLabels }}
+{{- end -}}

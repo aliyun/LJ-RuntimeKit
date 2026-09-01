@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lj-runtimekit-exporter-ds
+  namespace: {{ include "lj-runtimekit-exporter.namespace" . }}
+  labels:
+    {{- include "lj-runtimekit-exporter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: "lj-runtimekit-exporter"
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "lj-runtimekit-exporter.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: "lj-runtimekit-exporter"
+  template:
+    metadata:
+      labels:
+        {{- include "lj-runtimekit-exporter.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: "lj-runtimekit-exporter"
+      {{- if .Values.podAnnotations }}
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.hostNetwork }}
+      hostNetwork: {{ .Values.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- if .Values.hostPID }}
+      hostPID: {{ .Values.hostPID }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: lj-runtimekit-exporter
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- end }}
+      {{- if .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+      volumes:
+      {{- range .Values.amperfVolumes }}
+      - name: {{ .name | quote }}
+        hostPath:
+          path: {{ .hostPath | quote }}
+      {{- end }}
+      {{- with .Values.extraConfigMapVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      # Protocol constants ConfigMap (externalized cross-component keys).
+      # optional so the pod still starts when the ConfigMap is absent; the
+      # exporter then falls back to compiled-in defaults.
+      - name: protocol-config
+        configMap:
+          name: lj-runtimekit-exporter-config
+          optional: true
+      containers:
+      - name: exporter
+        securityContext:
+          privileged: true
+        {{- if .Values.image.tag }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        {{- else }}
+        image: "{{ .Values.image.repository }}:{{ .Chart.AppVersion }}"
+        {{- end }}
+        imagePullPolicy: "{{ .Values.image.pullPolicy }}"
+        args: 
+        {{- range $.Values.arguments }} 
+        - {{ . }} 
+        {{- end }}
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: "AMPERF_EXPORTER_LISTEN"
+          value: "{{ .Values.service.address }}"
+        {{- if .Values.amperfEnv }}
+        {{- toYaml .Values.amperfEnv | nindent 8 }}
+        {{- end }}
+        ports:
+        - name: "metrics"
+          containerPort: {{ .Values.service.port }}
+        volumeMounts:
+        {{- if .Values.amperfVolumeMounts }}
+        {{- toYaml .Values.amperfVolumeMounts | nindent 8 }}
+        {{- end }}
+        # Mount only the protocol.yaml key to the well-known path read by the loader.
+        - name: protocol-config
+          mountPath: /etc/aliyun-gpu-protocol/protocol.yaml
+          subPath: protocol.yaml
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.service.port }}
+          initialDelaySeconds: 45
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.service.port }}
+          initialDelaySeconds: 45
+        {{- if .Values.resources }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        {{- end }}

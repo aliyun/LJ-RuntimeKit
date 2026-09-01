@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    component: lj-runtimekit-scheduler-framework
+  name: lj-runtimekit-scheduler-framework
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      component: lj-runtimekit-scheduler-framework
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        component: lj-runtimekit-scheduler-framework
+    spec:
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+        key: node-role.kubernetes.io/master
+      serviceAccountName: lj-runtimekit-scheduler-framework
+      containers:
+        - command:
+            - /bin/kube-scheduler
+            - --leader-elect=false
+            - --secure-port=10258
+            - --config=/etc/kubernetes/scheduler-config.yaml
+            - --v=6
+          image: "{{ .Values.images.scheduler.image }}:{{ .Values.images.scheduler.tag }}"
+          imagePullPolicy: {{ .Values.images.scheduler.pullPolicy }}
+          livenessProbe:
+            failureThreshold: 8
+            httpGet:
+              path: /healthz
+              port: 10258
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 15
+          name: lj-runtimekit-scheduler-framework
+          startupProbe:
+            failureThreshold: 24
+            httpGet:
+              path: /healthz
+              port: 10258
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 1
+          resources:
+            requests:
+              cpu: '0.1'
+          securityContext:
+            privileged: false
+          volumeMounts:
+            - name: lj-runtimekit-scheduler-config
+              mountPath: /etc/kubernetes
+              readOnly: true
+      hostPID: false
+      volumes:
+        - name: lj-runtimekit-scheduler-config
+          configMap:
+            name: lj-runtimekit-scheduler-config

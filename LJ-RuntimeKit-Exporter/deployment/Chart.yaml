@@ -1,0 +1,16 @@
+apiVersion: v2
+name: lj-runtimekit-exporter
+description: A Helm chart for lj-runtimekit GPU exporter
+version: "1.0.0"
+kubeVersion: ">= 1.13.0-0"
+appVersion: "1.0.0"
+sources:
+home:
+icon:
+keywords:
+  - gpu
+  - cuda
+  - compute
+  - monitoring
+  - telemetry
+  - tesla

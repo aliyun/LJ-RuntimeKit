@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lj-runtimekit-exporter
+  labels:
+    {{- include "lj-runtimekit-exporter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: "lj-runtimekit-exporter"
+subjects:
+- kind: ServiceAccount
+  name: lj-runtimekit-exporter
+  namespace: {{ include "lj-runtimekit-exporter.namespace" . }}
+roleRef:
+  kind: ClusterRole
+  name: lj-runtimekit-exporter-read-pods
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,6 @@
+domain: example.com
+layout:
+- go.kubebuilder.io/v4
+projectName: lj-runtimekit-controller
+repo: github.com/lj-runtimekit/controller
+version: "3"

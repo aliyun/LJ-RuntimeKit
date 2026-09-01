@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lj-runtimekit-scheduler-config
+  namespace: kube-system
+data:
+  scheduler-config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: false
+      #resourceName: lj-runtimekit-scheduler-framework      # 与 RBAC 中的 resourceNames 一致
+      #resourceNamespace: kube-system
+    profiles:
+      - schedulerName: lj-runtimekit-scheduler
+        plugins:
+          queueSort:
+            enabled:
+            - name: Gang
+            disabled:
+            - name: PrioritySort
+          preFilter:
+            enabled:
+            - name: Standard
+            - name: Gang
+          filter:
+            enabled:
+            - name: Standard
+            - name: Mig
+            - name: Gang
+          score:
+            enabled:
+            - name: Standard
+              weight: 100
+            - name: Gang
+              weight: 100
+          reserve:
+            enabled:
+            - name: Standard
+            - name: Mig
+            - name: Gang
+          permit:
+            enabled:
+            - name: Gang
+  protocol.yaml: |
+    resources.gpu-count: "aliyun.com/gpu-count"
+    resources.memory: "aliyun.com/gpu-memory"
+    resources.core: "aliyun.com/gpu-core"
+    resources.slice: "aliyun.com/gpu-slice"
+    resources.rdma: "aliyun.com/rdma"
+    resources.gpu: "aliyun.com/gpu"
+    resources.nvidia: "nvidia.com/gpu"
+    annotations.gpu-idx-list: "ALIYUN_COM_GPU_IDX_LIST"
+    annotations.gpu-assigned: "ALIYUN_COM_GPU_ASSIGNED"
+    annotations.gpu-mem-assigned: "ALIYUN_COM_GPU_MEM_ASSIGNED"
+    annotations.gpu-core-assigned: "ALIYUN_COM_GPU_CORE_ASSIGNED"
+    annotations.gpu-slice-assigned: "ALIYUN_COM_GPU_SLICE_ASSIGNED"
+    annotations.gpu-mem-assume-time: "ALIYUN_COM_GPU_MEM_ASSUME_TIME"
+    annotations.pcie-switch-index: "ALIYUN_COM_PCIESWITCH_INDEX"
+    annotations.mig-mask: "aliyun.com/mig-mask"
+    annotations.mig-topology-start: "aliyun.com/mig-topology-start"
+    annotations.mig-topology-size: "aliyun.com/mig-topology-size"
+    annotations.mig-type: "aliyun.com/mig-type"
+    node.annotations.rdma-topo: "aliyun.com/gpu-rdma-topo"
+    node.annotations.device: "aliyun.com/device"
+    node.annotations.driver-version: "aliyun.com/driver-version"
+    node.labels.leaf-switch-id: "aliyun.com/leaf-switch-id"
+    node.labels.network-pod: "aliyun.com/network-pod"
+    node.labels.hypernode-id: "aliyun.com/hypernode-id"
+    strategies.node-placement-label: "node.gpu.placement"
+    strategies.spread: "spread"
+    strategies.binpack: "binpack"
+    labels.min-member: "aliyun.com/min-member"
+    labels.jobset-name: "jobset.sigs.k8s.io/jobset-name"
+    labels.jobset-replicated: "jobset.sigs.k8s.io/replicatedjob-name"
+    labels.jobset-job-index: "jobset.sigs.k8s.io/job-index"

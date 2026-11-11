@@ -18,8 +18,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Check dependencies
-command -v kubectl >/dev/null 2>&1 || { echo "[ERROR] kubectl not found in PATH"; exit 1; }
+# kubectl is only needed for deploy/undeploy, so the dependency check is
+# deferred to require_kubectl() and 'help' works without kubectl installed.
+require_kubectl() {
+  command -v kubectl >/dev/null 2>&1 || { echo "[ERROR] kubectl not found in PATH"; exit 1; }
+}
 
 # ==================== Output formatting ====================
 # Colored output with status symbols; auto-disabled when stdout is not a
@@ -62,15 +65,19 @@ print_check() {
   esac
 }
 
-# All available components and their corresponding directories
+# All available components and their corresponding directories.
+# ALL_COMPONENTS order is the deployment order and the default selection:
+# job-controller ships the ComputeDomain CRDs that device-plugin relies on,
+# so it is applied first and removed last.
 declare -A COMPONENT_DIRS=(
-  ["scheduler"]="${SCRIPT_DIR}/scheduler"
+  ["job-controller"]="${SCRIPT_DIR}/job-controller"
   ["device-plugin"]="${SCRIPT_DIR}/deviceplugin"
+  ["scheduler"]="${SCRIPT_DIR}/scheduler"
   ["exporter"]="${SCRIPT_DIR}/exporter"
   ["controller"]="${SCRIPT_DIR}/controller"
 )
 
-ALL_COMPONENTS=("scheduler" "device-plugin" "exporter" "controller")
+ALL_COMPONENTS=("job-controller" "device-plugin" "scheduler" "exporter" "controller")
 
 # ==================== Post-deploy verification config ====================
 RUNTIMEKIT_NS="kube-system"
@@ -86,12 +93,20 @@ Usage: $(basename "$0") <command> [options]
 Commands:
   deploy      Deploy components to Kubernetes
   undeploy    Remove components from Kubernetes
+  help        Show this help text (does not need kubectl)
 
 Options:
   --components=<list>   Comma-separated list of components to deploy/undeploy.
-                        Available: scheduler, device-plugin, exporter, controller
-                        Default: all components
+                        Available: job-controller, device-plugin, scheduler,
+                        exporter, controller
+                        Default: all components in the order above
   --skip-verify         Skip the post-deployment verification (deploy only)
+
+Notes:
+  Each component applies the regular *.yaml/*.yml files of its own directory
+  in ascending order (and deletes them in reverse order). Subdirectories are
+  not scanned, so deploy/job-controller/examples is never applied
+  automatically; apply those examples by hand once the CRDs exist.
 
 Environment variables:
   SKIP_VERIFY=1                     Skip the post-deployment verification (same as --skip-verify)
@@ -100,10 +115,11 @@ Environment variables:
 
 Examples:
   $(basename "$0") deploy                                     # Deploy all components
-  $(basename "$0") deploy --components=scheduler              # Deploy scheduler only
+  $(basename "$0") deploy --components=job-controller          # Deploy job-controller only
   $(basename "$0") deploy --components=device-plugin,exporter # Deploy multiple
   $(basename "$0") undeploy                                   # Undeploy all components
   $(basename "$0") undeploy --components=controller           # Undeploy controller only
+  $(basename "$0") help                                        # Show this help text
 EOF
 }
 
@@ -518,6 +534,11 @@ run_post_deploy_verify() {
           fi
         fi
         ;;
+      job-controller)
+        log_error "job-controller: deployment not ready within ${VERIFY_TIMEOUT}s"
+        diagnose_workload_failure_concise deployment lj-runtimekit-job-controller "$RUNTIMEKIT_NS"
+        add_verify_issue "[job-controller] deployment lj-runtimekit-job-controller not ready within ${VERIFY_TIMEOUT}s"
+        ;;
     esac
   done
 
@@ -535,11 +556,18 @@ fi
 COMMAND="$1"
 shift
 
-if [[ "$COMMAND" != "deploy" && "$COMMAND" != "undeploy" ]]; then
-  log_error "Unknown command: '$COMMAND'"
-  usage
-  exit 1
-fi
+case "$COMMAND" in
+  deploy|undeploy) ;;
+  help|-h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    log_error "Unknown command: '$COMMAND'"
+    usage
+    exit 1
+    ;;
+esac
 
 # Parse --components flag
 SELECTED_COMPONENTS=()
@@ -548,6 +576,13 @@ for arg in "$@"; do
   case "$arg" in
     --components=*)
       raw="${arg#--components=}"
+      # Reject empty items ("", "a,", ",a", "a,,b") instead of letting the
+      # split drop them, which would silently turn a typo into a partial run.
+      if [[ -z "$raw" || "$raw" == ,* || "$raw" == *, || "$raw" == *,,* ]]; then
+        log_error "Invalid --components list: '${raw}' (empty component name)"
+        echo "Available components: ${ALL_COMPONENTS[*]}"
+        exit 1
+      fi
       IFS=',' read -ra SELECTED_COMPONENTS <<< "$raw"
       ;;
     --skip-verify)
@@ -568,6 +603,9 @@ fi
 
 # Validate
 validate_components "${SELECTED_COMPONENTS[@]}"
+
+# Only deploy/undeploy reach this point, so 'help' works without kubectl.
+require_kubectl
 
 # Resolve skip-verify switch: command-line flag or env var
 SKIP_VERIFY=0

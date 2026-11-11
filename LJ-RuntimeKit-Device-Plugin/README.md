@@ -44,7 +44,7 @@ To build the LJ RuntimeKit Device Plugin from source, clone the code and create 
 
 ```
 git clone https://github.com/aliyun/LJ-RuntimeKit.git
-cd LJ-RuntimeKit-Device-Plugin
+cd LJ-RuntimeKit/LJ-RuntimeKit-Device-Plugin
 docker build -t <imgae_name> -f Dockerfile . 
 ```
 Alternatively, you can Makefile to build the image.

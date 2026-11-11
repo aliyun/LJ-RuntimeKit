@@ -1,0 +1,33 @@
+# Workload ResourceClaimTemplate rendered by the ComputeDomain controller.
+#
+# Group-dependent values (owner/target labels, finalizer and the opaque
+# apiVersion) are injected from the bound GroupContract so the same template
+# serves every enabled ComputeDomain API group. configureResourceClaimTemplate
+# re-applies all of them explicitly after rendering, therefore a contract change
+# here can never leak an object annotated for another API group.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: "{{.Name}}"
+  namespace: "{{.Namespace}}"
+  labels:
+    "{{.LabelComputeDomain}}": "{{.CDUID}}"
+    "{{.LabelTarget}}": "{{.Target}}"
+  finalizers:
+  - {{.Finalizer}}
+spec:
+  spec:
+    devices:
+      requests:
+      - name: channel
+        exactly:
+          deviceClassName: compute-domain-default-channel.aliyun.com
+          allocationMode: "{{.AllocationMode}}"
+      config:
+      - opaque:
+          driver: compute-domain.aliyun.com
+          parameters:
+            apiVersion: {{.OpaqueAPIVersion}}
+            kind: ComputeDomainChannelConfig
+            domainID: "{{.CDUID}}"
+            allocationMode: "{{.AllocationMode}}"

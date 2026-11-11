@@ -17,10 +17,11 @@
 # ==============================================================================
 
 VERSION        ?= v1.0.0
-# Builder image tag (registry.cn-hangzhou.aliyuncs.com/eflops-amp/golang).
+# Go version used by the Debian Bullseye builder for host ABI compatibility.
 # Must be >= the `go` directive in go.mod, which dependencies pin to 1.21.
 GOLANG_VERSION := 1.21.13
 ARCH           := $(shell uname -m)
+PROTOC         ?= protoc
 
 REGISTRY       ?= registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-exporter
 DOCKERCMD      := sudo DOCKER_BUILDKIT=1 docker build
@@ -28,7 +29,7 @@ DOCKERCMD      := sudo DOCKER_BUILDKIT=1 docker build
 # Module proxy used when resolving dependencies (this repo does not vendor).
 GOPROXY        ?= https://mirrors.aliyun.com/goproxy/,direct
 
-.PHONY: help build vendor test test-verbose test-coverage docker clean
+.PHONY: help build build-adapter generate-xdm vendor test test-verbose test-coverage docker clean
 
 # Default target: show help
 help:
@@ -36,6 +37,8 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  build           - Build exporter binary"
+	@echo "  build-adapter   - Build NPD adapter binary"
+	@echo "  generate-xdm    - Regenerate XDM protobuf bindings (requires protoc and Go plugins)"
 	@echo "  vendor          - Generate vendor directory for offline builds"
 	@echo ""
 	@echo "Test:"
@@ -47,7 +50,7 @@ help:
 	@echo "  clean           - Remove build artifacts"
 	@echo ""
 	@echo "Docker:"
-	@echo "  docker          - Build GPU exporter image"
+	@echo "  docker          - Build exporter image including the host NPD adapter"
 
 # ==============================================================================
 # Build
@@ -56,6 +59,15 @@ help:
 build:
 	cd cmd/exporter; go build -o exporter \
 		-ldflags "-X 'main.BuildVersion=${VERSION}'" -buildvcs=false
+
+build-adapter:
+	cd cmd/rt_npd_adapter; go build -o rt_npd_adapter \
+		-ldflags "-s -w" -buildvcs=false
+
+# Use the existing generator versions: protoc-gen-go v1.28.0 and protoc-gen-go-grpc v1.2.0.
+generate-xdm:
+	$(PROTOC) -I=pkg/grpc/xdm --go_out=pkg/grpc/xdm --go_opt=paths=source_relative \
+		--go-grpc_out=pkg/grpc/xdm --go-grpc_opt=paths=source_relative pkg/grpc/xdm/api_outer.proto
 
 vendor:
 	GOPROXY=$(GOPROXY) go mod vendor
@@ -66,15 +78,15 @@ vendor:
 
 test:
 	@echo "Running unit tests..."
-	go test ./pkg/common/... ./pkg/exporter/... -count=1
+	go test ./pkg/common/... ./pkg/exporter/... ./pkg/grpc/xdm/... ./pkg/npdadapter/... ./cmd/rt_npd_adapter/... -count=1
 
 test-verbose:
 	@echo "Running unit tests (verbose)..."
-	go test ./pkg/common/... ./pkg/exporter/... -v -count=1
+	go test ./pkg/common/... ./pkg/exporter/... ./pkg/grpc/xdm/... ./pkg/npdadapter/... ./cmd/rt_npd_adapter/... -v -count=1
 
 test-coverage:
 	@echo "Running unit tests with coverage..."
-	go test ./pkg/common/... ./pkg/exporter/... \
+	go test ./pkg/common/... ./pkg/exporter/... ./pkg/grpc/xdm/... ./pkg/npdadapter/... ./cmd/rt_npd_adapter/... \
 		-coverprofile=coverage.out -count=1
 	go tool cover -func=coverage.out
 	@echo ""
@@ -98,5 +110,5 @@ docker:
 # ==============================================================================
 
 clean:
-	rm -rf cmd/exporter/exporter
+	rm -rf cmd/exporter/exporter cmd/rt_npd_adapter/rt_npd_adapter
 	rm -rf coverage.out coverage.html

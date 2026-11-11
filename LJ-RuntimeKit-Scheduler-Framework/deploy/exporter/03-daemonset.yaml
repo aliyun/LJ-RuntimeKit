@@ -49,7 +49,7 @@ spec:
       - name: exporter
         securityContext:
           privileged: true
-        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-exporter:1.13.0-k8s1.28"
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-exporter:1.13.0-k8s1.34"
         imagePullPolicy: "IfNotPresent"
         env:
         - name: NODE_NAME

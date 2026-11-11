@@ -10,7 +10,7 @@ Key capabilities:
 - **Mig Plugin**: Supports NVIDIA MIG (Multi-Instance GPU) scheduling for GI and CI resource modes.
 - **Topology-aware scheduling**: For 2/4/8-card whole-GPU requests or virtual-GPU multi-replica requests, the scheduler prefers GPU groups that satisfy topology connectivity requirements.
 - **Placement strategies**: Supports `binpack` and `spread` device selection strategies through node labels.
-- **Deployment components**: Provides scheduler, device-plugin, exporter, and controller deployment manifests.
+- **Deployment components**: Provides job-controller, device-plugin, scheduler, exporter, and controller deployment manifests.
 
 ## 2. Technology Stack and Dependencies
 
@@ -113,28 +113,44 @@ The project uses a multi-stage Docker build:
 Use `deploy/deploy-all.sh` to deploy or remove components:
 
 ```bash
-# Deploy default components: scheduler, device-plugin, exporter, controller
+# Deploy the default components in order:
+# job-controller, device-plugin, scheduler, exporter, controller
 bash deploy/deploy-all.sh deploy
 
 # Deploy selected components
-bash deploy/deploy-all.sh deploy --components=scheduler
+bash deploy/deploy-all.sh deploy --components=job-controller
 bash deploy/deploy-all.sh deploy --components=device-plugin,exporter
 
-# Remove default components
+# Remove the default components (reverse order)
 bash deploy/deploy-all.sh undeploy
 
 # Remove selected components
 bash deploy/deploy-all.sh undeploy --components=controller
+
+# Show help (kubectl not required)
+bash deploy/deploy-all.sh help
 ```
 
 Available components:
 
 | Component | Directory | Deployment method | Description |
 |-----------|-----------|-------------------|-------------|
-| scheduler | `deploy/scheduler` | `kubectl apply -f` | Custom kube-scheduler with Standard/Mig/Gang plugins |
+| job-controller | `deploy/job-controller` | `kubectl apply -f` | IMEX DRA Job Controller: ComputeDomain CRDs, DeviceClass, RBAC, and Deployment |
 | device-plugin | `deploy/deviceplugin` | `kubectl apply -f` | GPU device publishing component |
+| scheduler | `deploy/scheduler` | `kubectl apply -f` | Custom kube-scheduler with Standard/Mig/Gang plugins |
 | exporter | `deploy/exporter` | `kubectl apply -f` | GPU metrics exporter, exposes port `9501` |
 | controller | `deploy/controller` | `kubectl apply -f` | AMP Controller for GPU task lifecycle management |
+
+Notes:
+
+- Each component applies the top-level `*.yaml`/`*.yml` files of its own directory in numbered order and deletes them in reverse order; subdirectories are not scanned, so the examples under `deploy/job-controller/examples/` are never applied automatically and must be applied by hand once the CRDs exist:
+
+  ```bash
+  kubectl apply -f deploy/job-controller/examples/example-computedomain.yaml
+  kubectl apply -f deploy/job-controller/examples/example-computedomain-aliyun.yaml
+  ```
+
+- The job-controller image is `lj-runtimekit-job-controller:1.13.20-k8s1.34` with `imagePullPolicy: IfNotPresent` and must be prepared in advance: `docker load` it for offline environments, or push it to a private registry and update the image reference in the YAML.
 
 ### 5.2 Scheduler YAML Deployment
 
@@ -204,6 +220,7 @@ images:
 ## 6. Prerequisites
 
 - Kubernetes cluster compatible with the scheduler dependency version; Kubernetes 1.21.x is recommended.
+- Deploying `job-controller` requires Kubernetes 1.34 with DRA (Dynamic Resource Allocation).
 - GPU drivers and runtime dependencies are installed on GPU nodes.
 - Nodes that run device-plugin and exporter must be labeled:
 

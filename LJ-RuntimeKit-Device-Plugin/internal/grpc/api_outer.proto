@@ -45,6 +45,12 @@ service XpuDeviceManagerService {
   rpc RestoreCPU(RestoreCPURequest) returns (RestoreCPUResponse);
   // Restore XPU state via cr-tool after container is running.
   rpc RestoreXPU(RestoreXPURequest) returns (RestoreXPUResponse);
+
+  // IMEX lifecycle and node topology APIs used by the compute-domain plugin.
+  rpc StartIMEX(StartIMEXRequest) returns (StartIMEXResponse);
+  rpc StopIMEX(StopIMEXRequest) returns (StopIMEXResponse);
+  rpc RefreshIMEX(RefreshIMEXRequest) returns (RefreshIMEXResponse);
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
 }
 
 enum XPUType {
@@ -289,4 +295,46 @@ message RestoreXPURequest {
 message RestoreXPUResponse {
   int32 status = 1;
   string message = 2;
+}
+
+message StartIMEXRequest {
+  string domainID = 1;
+  int32 maxNodes = 2;
+}
+
+message StartIMEXResponse {
+  int32 status = 1;
+  string message = 2;
+}
+
+message StopIMEXRequest {
+  string domainID = 1;
+}
+
+message StopIMEXResponse {
+  int32 status = 1;
+  string message = 2;
+}
+
+message RefreshIMEXItem {
+  string domainID = 1;
+  int32 index = 2;
+  string IP = 3;
+}
+
+message RefreshIMEXRequest {
+  repeated RefreshIMEXItem items = 1;
+}
+
+message RefreshIMEXResponse {
+  int32 status = 1;
+  string message = 2;
+}
+
+message GetNodeInfoRequest {}
+
+message GetNodeInfoResponse {
+  int32 status = 1;
+  string message = 2;
+  map<string, string> details = 3;
 }

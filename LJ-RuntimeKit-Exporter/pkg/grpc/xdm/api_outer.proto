@@ -20,22 +20,27 @@ option go_package = "./";
 
 
 service XpuDeviceManagerService {
-  // 设备分配
+  // Allocate device resources.
   rpc Allocate(AllocateRequest) returns (AllocateResponse);
-  // 查询支持的设备类型
+  // List supported device types.
   rpc ListSupportedXPUType(XPUTypeRequest) returns (XPUTypeResponse);
-  // 监听设备列表
+  // Watch device list updates.
   rpc ListAndWatch(ListAndWatchRequest) returns (stream ListAndWatchResponse);
-  // 查询已分配资源，初始化
+  // Query allocated resources for initialization.
   rpc ListInitialEnv(ListInitialEnvRequest) returns (ListInitialEnvResponse);
 
-  // exporter指标相关接口
+  // Exporter metrics interfaces.
   rpc ExporterGetConfig(ExporterRequest) returns (ExporterConfigResponse) {};
   rpc ExporterGetStatus(ExporterRequest) returns (ExporterStatusResponse) {};
   rpc ExporterGetDataList(ExporterDataRequest) returns (ExporterDataResponse) {};
   rpc ExporterDataStream(ExporterDataRequest) returns (stream ExporterDataResponse) {};
 
   rpc ListGpuInfo(ExporterRequest) returns (ListGpuInfoResponse) {};
+
+  // Retrieve a full health snapshot; detection rules are managed by the server.
+  rpc GetAllHealth(GetAllHealthRequest) returns (GetAllHealthResponse) {};
+  // Retrieve the health category catalog and NPD display metadata.
+  rpc GetCategories(GetCategoriesRequest) returns (GetCategoriesResponse) {};
 }
 
 enum XPUType {
@@ -46,7 +51,7 @@ enum XPUType {
 }
 
 enum FeatureFlag {
-  TroubleShooting = 0; // 使能在线profiling
+  TroubleShooting = 0; // Enable online profiling.
 }
 
 enum TopologyMode {
@@ -226,4 +231,43 @@ message ListGpuInfoResponse {
   XPUType  xpuType = 4;
   uint32   count   = 5;
   repeated GpuInfo gpu = 6;
+}
+
+// Health status; the zero value does not indicate a healthy state.
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTHY = 1;
+  UNHEALTHY = 2;
+  UNKNOWN = 3;
+}
+
+message GetAllHealthRequest {}
+
+// Full node health report with a snapshot-level timestamp and validity period.
+message GetAllHealthResponse {
+  string node_name = 1;
+  int64 sampled_at_ms = 2;
+  int64 ttl_ms = 3;
+  repeated CategoryHealth categories = 4;
+}
+
+message CategoryHealth {
+  string category = 1;
+  HealthStatus status = 2;
+  string reason = 3;
+}
+
+message GetCategoriesRequest {}
+
+message GetCategoriesResponse {
+  repeated CategoryInfo categories = 1;
+}
+
+// NPD display metadata for a health category.
+message CategoryInfo {
+  string category = 1;
+  string condition = 2;
+  string ok_reason = 3;
+  string ok_message = 4;
+  string bad_reason = 5;
 }

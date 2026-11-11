@@ -10,7 +10,7 @@ LJ RuntimeKit Scheduler Framework 是一个基于 Kubernetes Scheduler Framework
 - **Mig Plugin**：支持 NVIDIA MIG（Multi-Instance GPU）GI/CI 两类切片资源调度。
 - **拓扑感知调度**：针对 2/4/8 卡整卡任务或虚拟卡多副本任务，优先选择满足拓扑互联条件的 GPU 组。
 - **调度策略**：通过节点标签支持 `binpack` 和 `spread` 两种 GPU 设备选择策略。
-- **配套组件**：提供 scheduler、device-plugin、exporter、controller 等部署组件。
+- **配套组件**：提供 job-controller、device-plugin、scheduler、exporter、controller 等部署组件。
 
 ## 2. 技术栈与依赖
 
@@ -113,28 +113,43 @@ VERSION=v1.0.0
 推荐使用 `deploy/deploy-all.sh` 部署或卸载组件：
 
 ```bash
-# 部署默认组件：scheduler、device-plugin、exporter、controller
+# 部署默认组件（顺序：job-controller、device-plugin、scheduler、exporter、controller）
 bash deploy/deploy-all.sh deploy
 
 # 部署指定组件
-bash deploy/deploy-all.sh deploy --components=scheduler
+bash deploy/deploy-all.sh deploy --components=job-controller
 bash deploy/deploy-all.sh deploy --components=device-plugin,exporter
 
-# 卸载默认组件
+# 卸载默认组件（按反序执行）
 bash deploy/deploy-all.sh undeploy
 
 # 卸载指定组件
 bash deploy/deploy-all.sh undeploy --components=controller
+
+# 查看帮助（无需 kubectl）
+bash deploy/deploy-all.sh help
 ```
 
 可用组件：
 
 | 组件 | 目录 | 部署方式 | 说明 |
 |------|------|----------|------|
-| scheduler | `deploy/scheduler` | `kubectl apply -f` | 自定义 kube-scheduler，启用 Standard/Mig/Gang 插件 |
+| job-controller | `deploy/job-controller` | `kubectl apply -f` | IMEX DRA Job Controller，含 ComputeDomain CRD、DeviceClass、RBAC 与 Deployment |
 | device-plugin | `deploy/deviceplugin` | `kubectl apply -f` | GPU 设备发布组件 |
+| scheduler | `deploy/scheduler` | `kubectl apply -f` | 自定义 kube-scheduler，启用 Standard/Mig/Gang 插件 |
 | exporter | `deploy/exporter` | `kubectl apply -f` | GPU 指标采集组件，暴露 `9501` 端口 |
 | controller | `deploy/controller` | `kubectl apply -f` | AMP Controller，管理 GPU 任务相关生命周期 |
+
+注意事项：
+
+- 每个组件按目录内编号顺序 apply 顶层 `*.yaml`/`*.yml`，卸载时反序 delete；不扫描子目录，因此 `deploy/job-controller/examples/` 下的示例不会被自动 apply，需在 CRD 就绪后手工执行：
+
+  ```bash
+  kubectl apply -f deploy/job-controller/examples/example-computedomain.yaml
+  kubectl apply -f deploy/job-controller/examples/example-computedomain-aliyun.yaml
+  ```
+
+- job-controller 镜像为 `lj-runtimekit-job-controller:1.13.20-k8s1.34`，`imagePullPolicy` 为 `IfNotPresent`，需提前准备：离线环境先 `docker load`，私有仓库先推送镜像并修改 YAML 中的镜像地址。
 
 ### 5.2 Scheduler YAML 部署
 
@@ -204,6 +219,7 @@ images:
 ## 6. 部署前置条件
 
 - Kubernetes 集群与调度器依赖版本兼容，推荐 Kubernetes 1.21.x。
+- 部署 `job-controller` 需要 Kubernetes 1.34 及 DRA（Dynamic Resource Allocation）能力。
 - GPU 节点已安装驱动与运行时依赖。
 - device-plugin 和 exporter 节点需要打标签：
 

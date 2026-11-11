@@ -36,7 +36,8 @@ const (
 	// CheckpointGC enables the periodic reconciliation of the dp checkpoint
 	// records against the pods still present on the node (kubelet 10255):
 	// records of deleted pods are dropped and their allocations released in xdm.
-	CheckpointGC featuregate.Feature = "CheckpointGC"
+	CheckpointGC  featuregate.Feature = "CheckpointGC"
+	ComputeDomain featuregate.Feature = "ComputeDomain"
 )
 
 var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
@@ -48,6 +49,7 @@ var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	PluginAliPossibility: {Default: true, PreRelease: featuregate.Beta},
 	PluginGpuCount:       {Default: true, PreRelease: featuregate.Beta},
 	CheckpointGC:         {Default: true, PreRelease: featuregate.Alpha},
+	ComputeDomain:        {Default: false, PreRelease: featuregate.Alpha},
 }
 
 func PluginFeatureConvert(resourceName string) featuregate.Feature {

@@ -1,6 +1,8 @@
-FROM golang:1.21 as build
+ARG GOLANG_IMAGE=golang:1.26
+FROM ${GOLANG_IMAGE} as build
 
 ARG GOPROXY=https://mirrors.aliyun.com/goproxy/,direct
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /go/src/device-plugin
 COPY . .

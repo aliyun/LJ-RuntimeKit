@@ -41,6 +41,8 @@ type DeviceBase struct {
 var _ PluginInterface = &XpuDevicePlugin{}
 
 type XpuDevicePlugin struct {
+	pluginapi.UnimplementedDevicePluginServer
+
 	ResourceName string
 	Devs         map[string]*pluginapi.Device
 	Socket       string

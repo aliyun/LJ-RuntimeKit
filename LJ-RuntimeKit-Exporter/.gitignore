@@ -15,6 +15,7 @@ daemon/*.o
 cmd/amperf-collector/amperf-collector
 cmd/amperf-detector/amperf-detector
 cmd/exporter/exporter
+cmd/rt_npd_adapter/rt_npd_adapter
 cmd/amperf-persistence/amperf-persistence
 cmd/app-management-service/app-management-service
 cmd/amp-log-agent/amp-log-agent

@@ -104,6 +104,26 @@ func (m *MockXpuDeviceManagerServiceClient) RestoreXPU(ctx context.Context, in *
 	panic("implement me")
 }
 
+func (m *MockXpuDeviceManagerServiceClient) StartIMEX(ctx context.Context, in *xpugrpc.StartIMEXRequest, opts ...grpc.CallOption) (*xpugrpc.StartIMEXResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *MockXpuDeviceManagerServiceClient) StopIMEX(ctx context.Context, in *xpugrpc.StopIMEXRequest, opts ...grpc.CallOption) (*xpugrpc.StopIMEXResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *MockXpuDeviceManagerServiceClient) RefreshIMEX(ctx context.Context, in *xpugrpc.RefreshIMEXRequest, opts ...grpc.CallOption) (*xpugrpc.RefreshIMEXResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *MockXpuDeviceManagerServiceClient) GetNodeInfo(ctx context.Context, in *xpugrpc.GetNodeInfoRequest, opts ...grpc.CallOption) (*xpugrpc.GetNodeInfoResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
 // MockStream 模拟 ListAndWatch 的流式响应
 type MockStream struct {
 	mock.Mock

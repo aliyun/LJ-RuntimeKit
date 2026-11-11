@@ -2,3 +2,16 @@ image:
   repository: registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-exporter
   pullPolicy: IfNotPresent
   tag: v1.0.0
+
+npdAdapter:
+  enabled: true
+  hostDir: /opt/rt-npd
+  timeout: 3s
+  invokeInterval: 30s
+  pluginTimeout: 5s
+  concurrency: 3
+  maxOutputLength: 160
+  # Empty stores health.cache in hostDir alongside the adapter and configuration.
+  cacheFile: ""
+  # Set to 0s to disable caching.
+  cacheTTL: 10s

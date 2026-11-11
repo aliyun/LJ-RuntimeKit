@@ -29,14 +29,14 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - name: manager
-          image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller:1.13.0-k8s1.28"
+          image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller:1.13.0-k8s1.34"
           imagePullPolicy: IfNotPresent
           args:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
             - --job-namespace=kube-system
-            - --job-image=lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:1.13.0-k8s1.28
+            - --job-image=lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:1.13.0-k8s1.34
           ports:
             - containerPort: 8080
               name: metrics

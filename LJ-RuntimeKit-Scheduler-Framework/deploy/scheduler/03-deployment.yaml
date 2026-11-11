@@ -27,7 +27,7 @@ spec:
             - --secure-port=10258
             - --config=/etc/kubernetes/scheduler-config.yaml
             - --v=6
-          image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-scheduler-framework:1.13.0-k8s1.28"
+          image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-scheduler-framework:1.13.0-k8s1.34"
           imagePullPolicy: IfNotPresent
           livenessProbe:
             failureThreshold: 8

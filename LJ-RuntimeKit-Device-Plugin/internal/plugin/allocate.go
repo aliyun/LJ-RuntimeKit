@@ -54,7 +54,7 @@ func (dp *XpuDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allocat
 	allDeviceIDs := make([]string, 0)
 	for _, cntReq := range reqs.ContainerRequests {
 		klog.Infof("container request: %v", cntReq)
-		allDeviceIDs = append(allDeviceIDs, cntReq.DevicesIDs...)
+		allDeviceIDs = append(allDeviceIDs, cntReq.DevicesIds...)
 	}
 	if len(allDeviceIDs) == 0 {
 		klog.Errorf("no device ids in allocate request for resource %s", dp.ResourceName)
@@ -92,7 +92,7 @@ func (dp *XpuDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allocat
 // PreStartContainer resolves the pod identity, records the allocateID <-> pod
 // mapping for xdm, and performs the xdm allocate call.
 func (dp *XpuDevicePlugin) PreStartContainer(ctx context.Context, req *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
-	deviceIDs := req.DevicesIDs
+	deviceIDs := req.DevicesIds
 	if len(deviceIDs) == 0 {
 		return &pluginapi.PreStartContainerResponse{}, nil
 	}

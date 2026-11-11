@@ -1,0 +1,51 @@
+# ComputeDomain 自定义资源示例（resource.nvidia.com API group）
+#
+# 控制器始终同时服务 resource.aliyun.com 与 resource.nvidia.com 两个 API group，
+# 使用本示例无需任何额外参数。对应的 Aliyun 组示例见
+# example-computedomain-aliyun.yaml（使用不同的 resourceClaimTemplate 名称，
+# 避免同 namespace 跨组同名冲突）。
+#
+# ComputeDomain 用于准备一组节点来运行多节点工作负载（如 IMEX 跨节点 GPU 通信）。
+# 它与 DRA（Dynamic Resource Allocation）机制协同工作：
+#   1. 用户（或上层控制器）创建 ComputeDomain，在
+#      spec.channel.resourceClaimTemplate.name 中声明每个 Pod 需要的 GPU/Channel
+#      资源模板名称
+#   2. JobController 按该名称在同一个 namespace 中创建 ResourceClaimTemplate；
+#      同名 RCT 若已存在且属于其他 ComputeDomain（含另一个 API group）或无主，
+#      控制器会显式报冲突而不会接管或覆盖它
+#   3. 用户（或上层控制器）创建工作负载 Pod，每个 Pod 通过该
+#      ResourceClaimTemplate 实例化自己的 ResourceClaim
+#   4. 当前 Scheduler（1.13.0-k8s1.28）未启用 ComputeDomain 插件，
+#      同一 Clique 的节点归属需由工作负载或上层系统自行保证，不能依赖调度器
+#
+# 前置条件：
+#   - 集群已部署 ComputeDomain CRD（resource.nvidia.com/v1beta1）
+#   - 同 namespace 下没有其他 ComputeDomain（含另一个 API group）使用下面声明的
+#     ResourceClaimTemplate 名称；控制器会以该名称创建 RCT
+---
+apiVersion: resource.nvidia.com/v1beta1
+kind: ComputeDomain
+metadata:
+  # ComputeDomain 实例名称，建议与工作负载/训练任务对应
+  name: training-job-imex-domain
+  namespace: default
+spec:
+  # -----------------------------------------------------------------------
+  # numNodes 已废弃（deprecated），不要设置。
+  # 工作负载应自行管理在线 worker 数量，而非依赖此字段。
+  # 若显式设为非零值，控制器会记录警告日志并忽略该值。
+  # -----------------------------------------------------------------------
+
+  channel:
+    # resourceClaimTemplate —— 必填
+    # 控制器据此名称在同一个 namespace 中创建 ResourceClaimTemplate。
+    # 该模板定义了每个 Pod 需要申请的 IMEX Channel 设备资源，
+    # 其 DeviceClassName 为 compute-domain-default-channel.aliyun.com。
+    resourceClaimTemplate:
+      name: training-job-channel-template
+
+    # allocationMode —— 可选，枚举值：All / Single，默认 All
+    #   All    — 每个 Pod 申请所在节点上的全部 IMEX Channel（节点独占模式），
+    #            推荐用于需要完整 NVLink 带宽的 IMEX 工作负载。
+    #   Single — 每个 Pod 仅申请一个 IMEX Channel，适用于轻量通信场景。
+    allocationMode: All

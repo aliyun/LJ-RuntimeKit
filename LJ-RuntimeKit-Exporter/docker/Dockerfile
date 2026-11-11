@@ -1,9 +1,8 @@
 ARG GOLANG_VERSION
-# Builder image. The official golang image is used because this project needs
-# cgo (DCGM / NVML bindings) and therefore a C toolchain; the internal
-# eflops-amp/golang:1.21.13 mirror ships without gcc and with CGO_ENABLED=0.
+# CGO requires a C toolchain. Keep the glibc baseline compatible with host execution
+# on Ubuntu 22.04 and 24.04. Custom builder images must preserve this compatibility.
 # Override with --build-arg BUILDER_IMAGE=<your mirror> if needed.
-ARG BUILDER_IMAGE=golang:${GOLANG_VERSION}
+ARG BUILDER_IMAGE=golang:${GOLANG_VERSION}-bullseye
 FROM ${BUILDER_IMAGE} AS builder
 WORKDIR /go/src/exporter
 
@@ -23,11 +22,15 @@ ARG AMPERF_VERSION
 RUN cd cmd/exporter \
  && go build -mod=vendor -o exporter \
         -ldflags "-X 'main.BuildVersion=${AMPERF_VERSION}'" -buildvcs=false
+RUN cd cmd/rt_npd_adapter \
+ && go build -mod=vendor -o rt_npd_adapter \
+        -ldflags "-s -w" -trimpath -buildvcs=false
 
 FROM registry.cn-hangzhou.aliyuncs.com/eflops-amp/ubuntu:22.04
 LABEL io.k8s.display-name="lj-runtimekit-exporter"
 
 COPY --from=builder /go/src/exporter/cmd/exporter/exporter /usr/local/harp/amperf/
+COPY --from=builder /go/src/exporter/cmd/rt_npd_adapter/rt_npd_adapter /usr/local/harp/amperf/
 COPY etc /usr/local/harp/etc
 
 RUN apt-get update && apt-get install -y --no-install-recommends dmidecode

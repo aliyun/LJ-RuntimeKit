@@ -3,28 +3,32 @@
 # Tests enable/disable via node labels on two nodes.
 set -o pipefail
 
+# 仅在专用测试集群运行：脚本会修改两个节点的标签并触发组件启停。
+# 必填环境变量：SSH_USER、SSH_PASS、NODE1、NODE1_IP、NODE2、NODE2_IP、TAR_FILE。
+# TAR_FILE 是测试节点上的镜像归档路径；账号密码不得写回脚本或提交至仓库。
+# JOB_IMAGE、RESULT_LOG、DETAIL_LOG 可通过环境变量覆盖，日志默认写入当前目录。
 NAMESPACE="lj-runtimekit-system"
 EVENT_NS="default"
 LABEL_KEY="lj_runtimekit_enable"
 TARGET_LINK="/usr/bin/nvidia-container-runtime"
 TARGET_DEST="/usr/local/harp/kitC/xpu-container-runtime"
-SSH_PASS="001027Aa@"
-SSH_USER="zhangdanyang.zdy"
+SSH_USER="${SSH_USER:?请通过环境变量 SSH_USER 指定测试账号}"
+SSH_PASS="${SSH_PASS:?请通过环境变量 SSH_PASS 提供测试账号密码}"
 
-NODE1="t09c06224.cloud.sqa.na131"
-NODE1_IP="33.254.24.200"
-NODE2="w32g01140.cloud.sqa.na131"
-NODE2_IP="33.254.64.76"
+NODE1="${NODE1:?请设置第一个测试节点的 Kubernetes 节点名称 NODE1}"
+NODE1_IP="${NODE1_IP:?请设置第一个测试节点的 SSH 地址 NODE1_IP}"
+NODE2="${NODE2:?请设置第二个测试节点的 Kubernetes 节点名称 NODE2}"
+NODE2_IP="${NODE2_IP:?请设置第二个测试节点的 SSH 地址 NODE2_IP}"
 
-JOB_IMAGE="docker.io/library/lj-runtimekit-controller-job-agent:v0.1.9"
-TAR_FILE="/home/zhangdanyang.zdy/lj-runtimekit-controller-job-agent.tar"
+JOB_IMAGE="${JOB_IMAGE:-docker.io/library/lj-runtimekit-controller-job-agent:v0.1.9}"
+TAR_FILE="${TAR_FILE:?请设置测试节点上的镜像归档绝对路径 TAR_FILE}"
 
 TOTAL=0
 PASS=0
 FAIL=0
 
-RESULT_LOG="/home/zhangdanyang.zdy/amp_test_results.log"
-DETAIL_LOG="/home/zhangdanyang.zdy/amp_test_details.log"
+RESULT_LOG="${RESULT_LOG:-./amp_test_results.log}"
+DETAIL_LOG="${DETAIL_LOG:-./amp_test_details.log}"
 
 echo "=== AMP E2E Test Started at $(date -Iseconds) ===" | tee -a "$RESULT_LOG" "$DETAIL_LOG"
 

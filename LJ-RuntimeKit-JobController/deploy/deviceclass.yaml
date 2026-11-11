@@ -1,0 +1,9 @@
+---
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: compute-domain-default-channel.aliyun.com
+spec:
+  selectors:
+  - cel:
+      expression: "device.driver == 'compute-domain.aliyun.com' && device.attributes['compute-domain.aliyun.com'].type == 'channel' && device.attributes['compute-domain.aliyun.com'].id == 0"

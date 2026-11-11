@@ -4,6 +4,11 @@ metadata:
   name: lj-runtimekit-device-plugin-ds
   namespace: kube-system
 spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       component: lj-runtimekit-device-plugin
@@ -29,7 +34,7 @@ spec:
         lj_runtimekit_enable: "true"
       initContainers:
       - name: wait-xdm-ready
-        image: "registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-device-plugin:v1.0.0"
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.0-k8s1.28"
         command:
           - lj-runtimekit-device-plugin
           - --check-ready
@@ -39,11 +44,13 @@ spec:
             mountPath: /run/amp/eKitC/xdm/sockets
       containers:
       - name: lj-runtimekit-device-plugin
-        image: "registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-device-plugin:v1.0.0"
-        imagePullPolicy: IfNotPresent 
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.0-k8s1.28"
+        imagePullPolicy: IfNotPresent
         command:
           - lj-runtimekit-device-plugin
           - --logtostderr
+          - --feature-gates=ComputeDomain=true
+          - --v=6
         resources:
           limits:
             memory: "300Mi"
@@ -75,6 +82,10 @@ spec:
             mountPath: /etc/aliyun-gpu-protocol/protocol.yaml
             subPath: protocol.yaml
             readOnly: true
+          - name: plugins-registry
+            mountPath: /var/lib/kubelet/plugins_registry
+          - name: plugins
+            mountPath: /var/lib/kubelet/plugins
       volumes:
         - name: device-plugin
           hostPath:
@@ -86,3 +97,9 @@ spec:
           configMap:
             name: lj-runtimekit-device-plugin-config
             optional: true
+        - name: plugins-registry
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+        - name: plugins
+          hostPath:
+            path: /var/lib/kubelet/plugins

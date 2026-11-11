@@ -79,7 +79,7 @@ func TestAllocateRecordsCheckpoint(t *testing.T) {
 	}
 	req := &pluginapi.AllocateRequest{
 		ContainerRequests: []*pluginapi.ContainerAllocateRequest{
-			{DevicesIDs: []string{"COMP-0-_0", "COMP-0-_1"}},
+			{DevicesIds: []string{"COMP-0-_0", "COMP-0-_1"}},
 		},
 	}
 
@@ -151,7 +151,7 @@ func TestPreStartContainerIdempotentSkip(t *testing.T) {
 		Status:       utils.CheckpointStatusDone,
 	}))
 	resp, err := dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-0-_0"},
+		DevicesIds: []string{"COMP-0-_0"},
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -164,7 +164,7 @@ func TestPreStartContainerIdempotentSkip(t *testing.T) {
 		Status:       utils.CheckpointStatusPreStart,
 	}))
 	resp, err = dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-1-_0"},
+		DevicesIds: []string{"COMP-1-_0"},
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -195,7 +195,7 @@ func TestPreStartContainerRollbackOnFailure(t *testing.T) {
 
 	// first invocation fails while reading the kubelet checkpoint
 	_, err := dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-2-_0"},
+		DevicesIds: []string{"COMP-2-_0"},
 	})
 	assert.Error(t, err)
 
@@ -207,7 +207,7 @@ func TestPreStartContainerRollbackOnFailure(t *testing.T) {
 	// the retry must win the claim again (still fails on the missing kubelet
 	// checkpoint, proving it was not skipped by the idempotency guard)
 	_, err = dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-2-_0"},
+		DevicesIds: []string{"COMP-2-_0"},
 	})
 	assert.Error(t, err)
 	record, err = utils.FindRecordByDeviceIDs(ResourceCore, []string{"COMP-2-_0"})

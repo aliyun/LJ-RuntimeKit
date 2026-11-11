@@ -52,6 +52,12 @@ spec:
         {{- toYaml . | nindent 6 }}
       {{- end }}
       volumes:
+      {{- if .Values.npdAdapter.enabled }}
+      - name: rt-npd
+        hostPath:
+          path: {{ .Values.npdAdapter.hostDir | quote }}
+          type: DirectoryOrCreate
+      {{- end }}
       {{- range .Values.amperfVolumes }}
       - name: {{ .name | quote }}
         hostPath:
@@ -67,6 +73,56 @@ spec:
         configMap:
           name: lj-runtimekit-exporter-config
           optional: true
+      {{- if .Values.npdAdapter.enabled }}
+      initContainers:
+      - name: install-npd-adapter
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy | quote }}
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        command: ["/bin/sh", "-ec"]
+        args:
+        - |
+          tmp="$(mktemp "$NPD_INSTALL_DIR/.adapter.XXXXXX")"
+          trap 'rm -f "$tmp"' EXIT
+          install -m 0755 /usr/local/harp/amperf/rt_npd_adapter "$tmp"
+          mv -f "$tmp" "$NPD_INSTALL_DIR/rt_npd_adapter"
+          if ! "$NPD_INSTALL_DIR/rt_npd_adapter" --generate-config \
+              "--endpoint=$AMPERF_GRPC_PATH" \
+              "--config-file=$NPD_INSTALL_DIR/rt-custom-plugin-monitor.json" "$@"; then
+            printf '%s\n' 'NPD configuration generation failed; a future adapter invocation will retry if the file is missing.' >&2
+          fi
+        - install-npd-adapter
+        - {{ printf "--timeout=%v" .Values.npdAdapter.timeout | quote }}
+        - {{ printf "--invoke-interval=%v" .Values.npdAdapter.invokeInterval | quote }}
+        - {{ printf "--plugin-timeout=%v" .Values.npdAdapter.pluginTimeout | quote }}
+        - {{ printf "--concurrency=%v" .Values.npdAdapter.concurrency | quote }}
+        - {{ printf "--max-output-length=%v" .Values.npdAdapter.maxOutputLength | quote }}
+        - {{ printf "--cache-file=%s" (.Values.npdAdapter.cacheFile | default (printf "%s/health.cache" .Values.npdAdapter.hostDir)) | quote }}
+        - {{ printf "--cache-ttl=%v" .Values.npdAdapter.cacheTTL | quote }}
+        env:
+        - name: NPD_INSTALL_DIR
+          value: {{ .Values.npdAdapter.hostDir | quote }}
+        {{- if .Values.amperfEnv }}
+        {{- toYaml .Values.amperfEnv | nindent 8 }}
+        {{- end }}
+        volumeMounts:
+        - name: rt-npd
+          mountPath: {{ .Values.npdAdapter.hostDir | quote }}
+        {{- range .Values.amperfVolumeMounts }}
+        {{- if eq .name "rt-grpc" }}
+        - name: {{ .name | quote }}
+          mountPath: {{ .mountPath | quote }}
+          readOnly: true
+        {{- end }}
+        {{- end }}
+      {{- end }}
       containers:
       - name: exporter
         securityContext:

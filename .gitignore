@@ -1,0 +1,8 @@
+# Go vendor directories are generated on demand (`make vendor` / `go mod vendor`)
+# for offline builds. Every component resolves dependencies from the module
+# proxy instead, so vendor/ must never be checked in.
+/LJ-RuntimeKit-Controller/vendor/
+/LJ-RuntimeKit-Device-Plugin/vendor/
+/LJ-RuntimeKit-Exporter/vendor/
+/LJ-RuntimeKit-JobController/vendor/
+/LJ-RuntimeKit-Scheduler-Framework/vendor/

@@ -34,7 +34,7 @@ spec:
         lj_runtimekit_enable: "true"
       initContainers:
       - name: wait-xdm-ready
-        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.0-k8s1.28"
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.20-k8s1.34"
         command:
           - lj-runtimekit-device-plugin
           - --check-ready
@@ -44,11 +44,13 @@ spec:
             mountPath: /run/amp/eKitC/xdm/sockets
       containers:
       - name: lj-runtimekit-device-plugin
-        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.0-k8s1.28"
+        image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-device-plugin:1.13.20-k8s1.34"
         imagePullPolicy: IfNotPresent
         command:
           - lj-runtimekit-device-plugin
           - --logtostderr
+          - --feature-gates=ComputeDomain=true
+          - --v=6
         resources:
           limits:
             memory: "300Mi"
@@ -80,6 +82,10 @@ spec:
             mountPath: /etc/aliyun-gpu-protocol/protocol.yaml
             subPath: protocol.yaml
             readOnly: true
+          - name: plugins-registry
+            mountPath: /var/lib/kubelet/plugins_registry
+          - name: plugins
+            mountPath: /var/lib/kubelet/plugins
       volumes:
         - name: device-plugin
           hostPath:
@@ -91,3 +97,9 @@ spec:
           configMap:
             name: lj-runtimekit-device-plugin-config
             optional: true
+        - name: plugins-registry
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+        - name: plugins
+          hostPath:
+            path: /var/lib/kubelet/plugins

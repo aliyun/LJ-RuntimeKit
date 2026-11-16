@@ -17,9 +17,11 @@ limitations under the License.
 package gpu
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,12 +46,31 @@ const (
 )
 
 type DeviceManager struct {
-	k8sClient         *kubernetes.Clientset
+	k8sClient         kubernetes.Interface
 	deviceMeta        *utils.DeviceMeta
 	annotationDevices *GpuDevice
 	stopChan          chan struct{}
 
-	plugins []xpuplugin.PluginInterface
+	// annotationMu serialises every node annotation writer: the topology worker,
+	// the startup path and the health check all rewrite the same node fields, and
+	// an earlier build must never land after a later one
+	annotationMu sync.Mutex
+
+	// unhealthyDevices records the devices NVML reported as failed, keyed by
+	// minor. It is kept aside from the xdm snapshot because that snapshot keeps
+	// reporting the device as healthy; the annotation merges both views.
+	unhealthyMu      sync.Mutex
+	unhealthyDevices map[int]bool
+
+	// pluginsMu guards plugins and rdmaPlugin: the topology sync may start the
+	// rdma plugin while the restart loop rebuilds the whole set
+	pluginsMu  sync.Mutex
+	plugins    []xpuplugin.PluginInterface
+	rdmaPlugin xpuplugin.PluginInterface
+	// rebuilding is set while the restart loop tears the plugin set down or
+	// builds it again: a topology sync crossing that window must not start the
+	// rdma plugin, it would outlive the set that owns it
+	rebuilding bool
 
 	rdmaTopoAnnotation *RdmaTopoAnnotation
 	topoLabels         *NodeTopoLabels
@@ -77,10 +98,16 @@ func NewDeviceManager(bp utils.MemoryUnit) *DeviceManager {
 		annotationDevices: &GpuDevice{Devices: make(map[int]*Device)},
 		stopChan:          make(chan struct{}),
 		plugins:           make([]xpuplugin.PluginInterface, 0),
+		unhealthyDevices:  make(map[int]bool),
 	}
 }
 
 func (dm *DeviceManager) Run() error {
+	// 在 GC 和插件访问账本之前完成迁移，失败时禁止使用空账本继续启动。
+	if err := utils.MigrateDpCheckpoint(); err != nil {
+		return fmt.Errorf("initialize dp checkpoint failed: %w", err)
+	}
+
 	klog.Infof("starting FS watcher")
 
 	klog.Info("loading NVML")
@@ -113,7 +140,42 @@ func (dm *DeviceManager) Run() error {
 		_ = closer()
 	}()
 
-	GrpcListAndWatch(xmdClient, dm.deviceMeta)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var topoSync *TopoSync
+	if utils.DefaultFeatureGate.Enabled(feature.TopoWatch) {
+		klog.Infof("topology watch enabled, keeping the xdm ListAndWatch stream open")
+		topoSync = NewTopoSync(dm)
+
+		// the startup report and the plugin set are both built from the first
+		// snapshot, so wait for it before going any further
+		firstSnapshot := make(chan struct{})
+		var firstOnce sync.Once
+		go WatchXdmDevices(ctx, xmdClient, dm.deviceMeta, func() {
+			firstOnce.Do(func() { close(firstSnapshot) })
+			// the worker is not running yet, the signal is buffered and merged
+			// into its first round, see the constraint at the start site below
+			topoSync.Notify()
+		})
+
+		// xdm may never answer, so the wait has to stay interruptible: a SIGTERM
+		// sent during startup must end the process instead of being queued until
+		// the plugins are up
+	waitFirstSnapshot:
+		for {
+			select {
+			case <-firstSnapshot:
+				break waitFirstSnapshot
+			case s := <-sigs:
+				if exitOnStartupSignal(s) {
+					return nil
+				}
+			}
+		}
+	} else {
+		GrpcListAndWatch(ctx, xmdClient, dm.deviceMeta)
+	}
 
 	// The checkpoint GC drops records of deleted pods and releases their
 	// allocations in xdm. Started once outside the plugin restart loop.
@@ -133,8 +195,12 @@ func (dm *DeviceManager) Run() error {
 		klog.Errorf("patchPodsAnnotation failed on node %s: %v", nodeName, err)
 	}
 
-	if err := dm.patchNodeAnnotation(); err != nil {
-		klog.Errorf("patchNodeAnnotation failed on node %s: %v", nodeName, err)
+	// with TopoWatch the first node report runs after the plugins are up, so the
+	// rdma plugin it may start is the one the manager already knows about
+	if topoSync == nil {
+		if err := dm.patchNodeAnnotation(); err != nil {
+			klog.Errorf("patchNodeAnnotation failed on node %s: %v", nodeName, err)
+		}
 	}
 
 	deviceType, err := GetDeviceType(xmdClient)
@@ -144,9 +210,16 @@ func (dm *DeviceManager) Run() error {
 
 	var started bool
 	var restartTimeout <-chan time.Time
+	var topoWorkerStarted bool
+
 restart:
 	if started {
-		err := stopPlugins(dm.plugins)
+		// freeze the topology worker before the set is torn down, see rebuilding:
+		// a sync running in this window would start an rdma plugin that nobody
+		// stops. Released by endRebuild once the new set is in place.
+		dm.beginRebuild()
+
+		err := dm.stopAllPlugins()
 		if err != nil {
 			return fmt.Errorf("error stopping plugins from previous run: %v", err)
 		}
@@ -155,7 +228,7 @@ restart:
 	}
 
 	klog.Info("starting plugins")
-	plugins, restartPlugins, err := startPlugins(deviceType, dm.deviceMeta, dm.k8sClient)
+	plugins, restartPlugins, err := startPlugins(deviceType, dm.deviceMeta, dm.k8sClient, HasPcieSwitchTopology(dm.deviceMeta))
 	if err != nil {
 		return fmt.Errorf("error starting plugins: %v", err)
 	}
@@ -165,11 +238,40 @@ restart:
 		klog.Infof("Failed to start one or more plugins. Retrying in 30s...")
 		restartTimeout = time.After(30 * time.Second)
 	} else {
-		dm.plugins = plugins
+		dm.setPlugins(plugins)
+
+		// the set is in place again: a sync reaching this point may start the
+		// rdma plugin, it is now registered in dm.plugins and owned by this run
+		dm.endRebuild()
+
+		// publish the snapshot known at this point: it also withdraws or
+		// restores the rdma resource according to the current topology
+		if topoSync != nil {
+			if err := topoSync.Sync(); err != nil {
+				klog.Errorf("topology sync failed on node %s: %v", nodeName, err)
+			}
+
+			// The worker must never start before setPlugins above. A sync that
+			// runs first sees no rdma plugin and calls ensureRDMAStarted, which
+			// builds and registers one; startPlugins then builds a second
+			// instance for the same socket and setPlugins replaces the field,
+			// leaving the first one serving with its socket removed and no
+			// reference left to stop it. Snapshots pushed before this point are
+			// not lost: they stay buffered in the trigger channel and are merged
+			// into the first round, which is a no-op because this sync already
+			// published the same target.
+			if !topoWorkerStarted {
+				klog.Infof("starting topology sync worker")
+				go topoSync.Run(ctx)
+				topoWorkerStarted = true
+			}
+		}
 
 		if deviceType == utils.DeviceTypeGPU {
 			klog.Infof("Starting device health check for device type: %s", deviceType)
-			go dm.DeviceHealthCheck()
+			// hand over this run's stop channel; Stop arms a fresh one for
+			// the next run, so the field must not be read from the goroutine
+			go dm.DeviceHealthCheck(dm.stopChan)
 		}
 	}
 
@@ -203,10 +305,7 @@ restart:
 				klog.Info("Received SIGHUP, restarting.")
 				goto restart
 			case syscall.SIGQUIT:
-				t := time.Now()
-				timestamp := fmt.Sprint(t.Format("20060102150405"))
-				klog.Infof("generating core dump")
-				coreDump("/etc/kubernetes/go_" + timestamp + ".txt")
+				writeCoreDump()
 			default:
 				klog.Infof("received signal %v, shutting down", s)
 				goto exit
@@ -214,8 +313,17 @@ restart:
 		}
 	}
 exit:
-	err = stopPlugins(plugins)
-	if err != nil {
+	// stop the topology worker before the plugins: a sync running after the
+	// plugins were stopped could start the rdma plugin again through
+	// ensureRDMAStarted and leave it behind
+	cancel()
+
+	// the worker may already be inside a sync that passed its context check
+	dm.beginRebuild()
+
+	// dm.plugins is the only source of truth for what is running, whatever
+	// round started it
+	if err := dm.stopAllPlugins(); err != nil {
 		return fmt.Errorf("error stopping plugins: %v", err)
 	}
 
@@ -223,6 +331,38 @@ exit:
 	return nil
 }
 
+// exitOnStartupSignal reacts to a signal received before the plugins run. It
+// reports whether the process must shut down: SIGHUP keeps waiting for the
+// first snapshot because there is nothing to restart yet, SIGQUIT keeps its
+// core dump meaning, everything else ends the process.
+func exitOnStartupSignal(s os.Signal) bool {
+	switch s {
+	case syscall.SIGHUP:
+		klog.Info("Received SIGHUP before the first device snapshot, still waiting for xdm")
+		return false
+	case syscall.SIGQUIT:
+		writeCoreDump()
+		return false
+	default:
+		klog.Infof("received signal %v, shutting down", s)
+		return true
+	}
+}
+
+// writeCoreDump dumps the goroutine state so a hang can be inspected afterwards.
+func writeCoreDump() {
+	t := time.Now()
+	timestamp := fmt.Sprint(t.Format("20060102150405"))
+	klog.Infof("generating core dump")
+	coreDump("/etc/kubernetes/go_" + timestamp + ".txt")
+}
+
+// Stop signals the goroutines of the current run to exit and arms a fresh
+// stop channel for the next run. Run reaches Stop on every plugin restart
+// (kubelet restart, SIGHUP, start retry) and on exit, so reusing one channel
+// would close it twice and panic, and a closed channel would make the next
+// health check exit right away.
 func (dm *DeviceManager) Stop() {
 	close(dm.stopChan)
+	dm.stopChan = make(chan struct{})
 }

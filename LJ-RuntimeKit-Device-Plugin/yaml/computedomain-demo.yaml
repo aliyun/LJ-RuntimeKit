@@ -1,0 +1,72 @@
+# ComputeDomain 示例:每个 Pod 申请 2 张 GPU(device plugin)+ 1 个 IMEX
+# channel(DRA,compute-domain.aliyun.com),同一 domainID 的 Pod 组成一个
+# IMEX 域。
+---
+# 选中本插件发布的 IMEX channel 设备。集群内只需创建一次。
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: compute-domain-channel.aliyun.com
+spec:
+  selectors:
+  - cel:
+      expression: >-
+        device.driver == "compute-domain.aliyun.com" &&
+        device.attributes["compute-domain.aliyun.com"].type == "channel"
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: imex-channel
+  namespace: default
+spec:
+  spec:
+    devices:
+      requests:
+      - name: channel
+        exactly:
+          deviceClassName: compute-domain-channel.aliyun.com
+          count: 1
+      config:
+      - requests: ["channel"]
+        opaque:
+          driver: compute-domain.aliyun.com
+          parameters:
+            apiVersion: resource.aliyun.com/v1beta1
+            kind: ComputeDomainChannelConfig
+            # 同一个 IMEX 域内的所有 Pod 必须使用相同的 domainID;
+            # 不填时插件退化为各自的 claim UID,每个 Pod 会各成一个域。
+            domainID: demo-domain-0001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imex-demo
+  namespace: default
+spec:
+  replicas: 4
+  # 每个节点只有一个 channel 且有反亲和,滚动更新时先删后建,
+  # 否则新 Pod 会因为旧 Pod 占着节点而一直 Pending。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: imex-demo
+  template:
+    metadata:
+      labels:
+        app: imex-demo
+    spec:
+      runtimeClassName: lj-runtime
+      resourceClaims:
+      - name: imex-channel
+        resourceClaimTemplateName: training-job-channel-template
+      containers:
+      - name: main
+        image: ubuntu:22.04
+        command: ["sleep", "infinity"]
+        resources:
+          limits:
+            aliyun.com/gpu: 2
+          claims:
+          - name: imex-channel

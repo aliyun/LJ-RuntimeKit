@@ -1,0 +1,103 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: computedomains.resource.nvidia.com
+spec:
+  group: resource.nvidia.com
+  names:
+    kind: ComputeDomain
+    listKind: ComputeDomainList
+    plural: computedomains
+    singular: computedomain
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        description: ComputeDomain prepares a set of nodes to run a multi-node workload in.
+        type: object
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ComputeDomainSpec provides the spec for a ComputeDomain.
+            type: object
+            properties:
+              numNodes:
+                description: Deprecated intended node count retained for API compatibility.
+                type: integer
+                minimum: 0
+              channel:
+                description: Channel configuration for workload communication.
+                type: object
+                properties:
+                  resourceClaimTemplate:
+                    description: ResourceClaimTemplate generated for channel allocation.
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                  allocationMode:
+                    description: Controls whether all channels or one channel are requested.
+                    type: string
+                    enum:
+                    - All
+                    - Single
+                    default: All
+                required:
+                - resourceClaimTemplate
+            required:
+            - channel
+            x-kubernetes-validations:
+            - rule: self == oldSelf
+              message: spec is immutable
+          status:
+            description: Global ComputeDomain status.
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                - Ready
+                - NotReady
+                default: NotReady
+              nodes:
+                type: array
+                x-kubernetes-list-type: map
+                x-kubernetes-list-map-keys:
+                - name
+                items:
+                  description: Information about a node in the ComputeDomain.
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    ipAddress:
+                      type: string
+                    cliqueID:
+                      type: string
+                    index:
+                      type: integer
+                    status:
+                      type: string
+                      enum:
+                      - Ready
+                      - NotReady
+                      default: NotReady
+                  required:
+                  - name
+                  - ipAddress
+                  - cliqueID
+            required:
+            - status
+    subresources:
+      status: {}

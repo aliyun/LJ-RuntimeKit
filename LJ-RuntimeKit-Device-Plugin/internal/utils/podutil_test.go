@@ -56,6 +56,20 @@ func TestGetPodResource(t *testing.T) {
 	assert.Equal(t, uint(0), result)
 }
 
+// TestIsMigSlicePod verifies the label that separates the two meanings of
+// gpu-slice: rt_mig_enable=true means MIG instances, its absence means MPS
+// compute slices.
+func TestIsMigSlicePod(t *testing.T) {
+	assert.True(t, IsMigSlicePod(&v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Labels: map[string]string{LabelMigEnable: "true"},
+	}}))
+	assert.False(t, IsMigSlicePod(&v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Labels: map[string]string{LabelMigEnable: "false"},
+	}}))
+	assert.False(t, IsMigSlicePod(&v1.Pod{}))
+	assert.False(t, IsMigSlicePod(nil))
+}
+
 // TestIsWholeCardPod verifies whole card recognition purely by the total
 // gpu-core limit reaching WholeCardCore.
 func TestIsWholeCardPod(t *testing.T) {

@@ -54,7 +54,7 @@ func (dp *XpuDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allocat
 	allDeviceIDs := make([]string, 0)
 	for _, cntReq := range reqs.ContainerRequests {
 		klog.Infof("container request: %v", cntReq)
-		allDeviceIDs = append(allDeviceIDs, cntReq.DevicesIDs...)
+		allDeviceIDs = append(allDeviceIDs, cntReq.DevicesIds...)
 	}
 	if len(allDeviceIDs) == 0 {
 		klog.Errorf("no device ids in allocate request for resource %s", dp.ResourceName)
@@ -92,7 +92,7 @@ func (dp *XpuDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allocat
 // PreStartContainer resolves the pod identity, records the allocateID <-> pod
 // mapping for xdm, and performs the xdm allocate call.
 func (dp *XpuDevicePlugin) PreStartContainer(ctx context.Context, req *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
-	deviceIDs := req.DevicesIDs
+	deviceIDs := req.DevicesIds
 	if len(deviceIDs) == 0 {
 		return &pluginapi.PreStartContainerResponse{}, nil
 	}
@@ -159,6 +159,7 @@ func (dp *XpuDevicePlugin) PreStartContainer(ctx context.Context, req *pluginapi
 		r.PodName = podEntry.PodName
 	}); err != nil {
 		klog.Errorf("update allocate record %s failed: %v", record.AllocateID, err)
+		return nil, fmt.Errorf("update allocate record %s failed: %w", record.AllocateID, err)
 	}
 
 	// 6. call xdm: every dimension registers its allocateID there, xdmCallMode
@@ -281,6 +282,76 @@ func (dp *XpuDevicePlugin) buildErrResponse(reqs *pluginapi.AllocateRequest, pod
 	return &responses
 }
 
+// sliceExtenderFor resolves the Mig* extender of one slice allocation.
+// gpu-slice is a dual-mode resource: with rt_mig_enable=true the scheduler
+// already resolved the MIG topology parameters into pod annotations and they
+// must be forwarded to xdm, otherwise the request means MPS compute (TPC)
+// slices, where xdm only books the capacity and creates no MIG instance. A nil
+// extender therefore tells xdm this is an MPS slice allocation.
+func sliceExtenderFor(pod *v1.Pod) (map[string]string, error) {
+	if !utils.IsMigSlicePod(pod) {
+		klog.Infof("pod %s/%s requests gpu-slice without %s=true, allocate as MPS slice",
+			pod.Namespace, pod.Name, utils.LabelMigEnable)
+		return nil, nil
+	}
+
+	mask, err := utils.GetMigMaskFromAnnotations(pod)
+	if err != nil {
+		klog.Errorf("pod %s(%s) get MigMask annotation failed due to %v", pod.Name, pod.Namespace, err)
+		return nil, fmt.Errorf("pod(%s) get MigMask annotation failed due to %v", pod.Name, err)
+	}
+
+	start, size, err := utils.GetMigStartAndSizeFromAnnotations(pod)
+	if err != nil {
+		klog.Errorf("pod %s(%s) get device topology start and size failed due to error: %v", pod.Name, pod.Namespace, err)
+		return nil, fmt.Errorf("pod(%s) get device topology start and size failed due to error: %v", pod.Name, err)
+	}
+
+	migType := utils.GetMigTypeFromAnnotation(pod)
+	if migType == utils.MigDeviceType("") {
+		klog.Errorf("pod (%s/%s) has empty migType", pod.Namespace, pod.Name)
+		return nil, fmt.Errorf("pod(%s/%s) has empty migType", pod.Namespace, pod.Name)
+	}
+
+	return map[string]string{
+		utils.AllocateMigMask:  strconv.Itoa(int(mask)),
+		utils.AllocateMigType:  strconv.Itoa(utils.MigType2Mode(migType)),
+		utils.AllocateMigSize:  strconv.Itoa(size),
+		utils.AllocateMigStart: strconv.Itoa(start),
+	}, nil
+}
+
+// sliceFactorFor 仅为实际携带 Slice 的 MIG 设备设置必填 Factor。
+// 仅传 minor 的请求不含 Slice，MPS slice 也不设置 Factor。
+func sliceFactorFor(pod *v1.Pod, device *xpugrpc.AllocatedDevices) *wrapperspb.UInt32Value {
+	if device.GetSlice() == nil || !utils.IsMigSlicePod(pod) {
+		return nil
+	}
+	return wrapperspb.UInt32(utils.MigFactor)
+}
+
+// pcieSwitchIndexFor 返回当前资源分配需要透传给 XDM 的 RDMA PCIe switch 索引。
+func (dp *XpuDevicePlugin) pcieSwitchIndexFor(pod *v1.Pod) string {
+	if dp.ResourceName == utils.ResourceGPU || dp.ResourceName == utils.ResourceNvidia ||
+		(dp.ResourceName == utils.ResourceCore && utils.IsWholeCardPod(pod)) {
+		return utils.GetPcieSwitchIndex(pod)
+	}
+	return ""
+}
+
+// featureGatesFor returns the xdm feature gates of the pod; online profiling
+// (TroubleShooting) is enabled when the pod carries rt-profiling-enable=true.
+func featureGatesFor(pod *v1.Pod) map[int32]bool {
+	if pod.Labels[utils.LabelProfilingEnable] != "true" {
+		return nil
+	}
+	klog.Infof("pod %s/%s has %s=true, enabling profiling in xdm feature gates",
+		pod.Namespace, pod.Name, utils.LabelProfilingEnable)
+	return map[int32]bool{
+		int32(xpugrpc.FeatureFlag_TroubleShooting): true,
+	}
+}
+
 // xdmAllocate performs the xdm gRPC allocate call; minorsOnly carries only
 // device minors, without capacity amounts.
 func (dp *XpuDevicePlugin) xdmAllocate(ctx context.Context, selectedPod *v1.Pod, podResourceReq int, kubeletDeviceIDs []string, allocateID string, minorsOnly bool) (*xpugrpc.AllocateResponse, error) {
@@ -328,6 +399,7 @@ func (dp *XpuDevicePlugin) xdmAllocate(ctx context.Context, selectedPod *v1.Pod,
 			utils.AnnotationKeyAllocateID: allocateID,
 		}
 	}
+	allocateRequest.FeatureGates = featureGatesFor(selectedPod)
 
 	if len(ids) == 0 {
 		if podResourceReq <= 0 {
@@ -375,28 +447,14 @@ func (dp *XpuDevicePlugin) xdmAllocate(ctx context.Context, selectedPod *v1.Pod,
 				device.Core = allocateCore
 			case utils.ResourceSlice:
 				device.Slice = wrapperspb.UInt32(uint32(podResourceReq))
-				mask, err := utils.GetMigMaskFromAnnotations(selectedPod)
+				device.Factor = sliceFactorFor(selectedPod, device)
+				extender, err := sliceExtenderFor(selectedPod)
 				if err != nil {
-					klog.Errorf("pod %s(%s) get MigMask annotation failed due to %v", selectedPod.Name, selectedPod.Namespace, err)
-					return nil, fmt.Errorf("pod(%s) get MigMask annotation failed due to %v", selectedPod.Name, err)
+					return nil, err
 				}
-
-				start, size, err := utils.GetMigStartAndSizeFromAnnotations(selectedPod)
-				if err != nil {
-					klog.Errorf("pod %s(%s) get device topology start and size failed due to error: %v", selectedPod.Name, selectedPod.Namespace, err)
-					return nil, fmt.Errorf("pod %s(%s) get device topology start and size failed due to error: %v", selectedPod.Name, selectedPod.Namespace, err)
+				for key, value := range extender {
+					device.Extender[key] = value
 				}
-
-				migType := utils.GetMigTypeFromAnnotation(selectedPod)
-				if migType == utils.MigDeviceType("") {
-					klog.Errorf("pod (%s/%s) has empty migType", selectedPod.Namespace, selectedPod.Name)
-					return nil, fmt.Errorf("pod(%s/%s) has empty migType", selectedPod.Namespace, selectedPod.Name)
-				}
-
-				device.Extender[utils.AllocateMigMask] = strconv.Itoa(int(mask))
-				device.Extender[utils.AllocateMigType] = strconv.Itoa(utils.MigType2Mode(migType))
-				device.Extender[utils.AllocateMigSize] = strconv.Itoa(size)
-				device.Extender[utils.AllocateMigStart] = strconv.Itoa(start)
 			case utils.ResourcePossibility:
 				device.Possibility = allocatePossibility
 			}
@@ -405,14 +463,12 @@ func (dp *XpuDevicePlugin) xdmAllocate(ctx context.Context, selectedPod *v1.Pod,
 	}
 	// pass the pcie switch indexes to xdm so it mounts the rdma devices behind
 	// those switches
-	if dp.ResourceName == utils.ResourceGPU || dp.ResourceName == utils.ResourceNvidia {
-		if pcieIndex := utils.GetPcieSwitchIndex(selectedPod); pcieIndex != "" {
-			for _, device := range allocateDevices {
-				device.Extender[utils.AllocatePcieIndex] = pcieIndex
-			}
-			klog.Infof("xdm allocate attached pcie switch index %q to %d devices of pod %s/%s",
-				pcieIndex, len(allocateDevices), selectedPod.Namespace, selectedPod.Name)
+	if pcieIndex := dp.pcieSwitchIndexFor(selectedPod); pcieIndex != "" {
+		for _, device := range allocateDevices {
+			device.Extender[utils.AllocatePcieIndex] = pcieIndex
 		}
+		klog.Infof("xdm allocate attached pcie switch index %q to %d devices of pod %s/%s",
+			pcieIndex, len(allocateDevices), selectedPod.Namespace, selectedPod.Name)
 	}
 
 	klog.V(4).Infof("xdmAllocate allocateDevices %v", allocateDevices)

@@ -156,6 +156,72 @@ func TestCheckpointGCAbsentFromBothSourcesDeletesImmediately(t *testing.T) {
 	assert.Empty(t, loadRecordIDs(t))
 }
 
+// TestCheckpointGCSkipsRecordAdvancedAfterSnapshot verifies that a record
+// updated between the snapshot and the release is neither released in xdm nor
+// dropped: the decision was taken on a stale snapshot.
+func TestCheckpointGCSkipsRecordAdvancedAfterSnapshot(t *testing.T) {
+	setupDpCheckpoint(t)
+	now := time.Now().UnixNano()
+
+	assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
+		AllocateID: "alloc-raced",
+		PodUID:     "uid-deleted",
+		Status:     CheckpointStatusDone,
+		CreateTime: now,
+		UpdateTime: now,
+	}))
+
+	releaser := &fakeXdmReleaser{}
+	gc := newTestGC(releaser, map[string]struct{}{})
+	gc.fetchKubeletState = func() (*KubeletCheckpointState, error) {
+		// another stage advances the record right after the GC snapshot
+		assert.NoError(t, UpdateAllocateRecord("alloc-raced", func(r *AllocateRecord) {
+			r.Status = CheckpointStatusPreStart
+		}))
+		return &KubeletCheckpointState{
+			PodUIDs:         map[string]struct{}{},
+			AssignedDevices: map[string]map[string]struct{}{},
+		}, nil
+	}
+	assert.NoError(t, gc.RunOnce())
+
+	assert.Equal(t, 0, releaser.callCount())
+	_, kept := loadRecordIDs(t)["alloc-raced"]
+	assert.True(t, kept)
+}
+
+// TestCheckpointGCSkipsRecordVanishedAfterSnapshot verifies that a record
+// removed between the snapshot and the release is not released again.
+func TestCheckpointGCSkipsRecordVanishedAfterSnapshot(t *testing.T) {
+	setupDpCheckpoint(t)
+	now := time.Now().UnixNano()
+
+	assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
+		AllocateID: "alloc-vanished",
+		PodUID:     "uid-deleted",
+		Status:     CheckpointStatusDone,
+		CreateTime: now,
+		UpdateTime: now,
+	}))
+
+	releaser := &fakeXdmReleaser{}
+	gc := newTestGC(releaser, map[string]struct{}{})
+	gc.fetchKubeletState = func() (*KubeletCheckpointState, error) {
+		snapshot, err := LoadAllocateRecord("alloc-vanished")
+		assert.NoError(t, err)
+		_, _, err = DeleteUnchangedAllocateRecords([]*AllocateRecord{snapshot})
+		assert.NoError(t, err)
+		return &KubeletCheckpointState{
+			PodUIDs:         map[string]struct{}{},
+			AssignedDevices: map[string]map[string]struct{}{},
+		}, nil
+	}
+	assert.NoError(t, gc.RunOnce())
+
+	assert.Equal(t, 0, releaser.callCount())
+	assert.Empty(t, loadRecordIDs(t))
+}
+
 // TestCheckpointGCKeepsRecordStillInKubeletCheckpoint verifies a record
 // still in the checkpoint but missing from the pod list arms the timer and
 // is not released immediately.
@@ -188,9 +254,11 @@ func TestCheckpointGCKeepsRecordStillInKubeletCheckpoint(t *testing.T) {
 	assert.True(t, armed)
 }
 
-// TestCheckpointGCResidualCheckpointEntryReclaimed verifies that a stale
-// checkpoint entry of a deleted pod is released after the full grace period.
-func TestCheckpointGCResidualCheckpointEntryReclaimed(t *testing.T) {
+// TestCheckpointGCKeepsResidualCheckpointEntry verifies that a record whose
+// pod is missing from the pod list but still present in the kubelet checkpoint
+// is never reclaimed: the two sources disagree, so the pod cannot be proven
+// gone.
+func TestCheckpointGCKeepsResidualCheckpointEntry(t *testing.T) {
 	setupDpCheckpoint(t)
 	now := time.Now().UnixNano()
 
@@ -211,7 +279,7 @@ func TestCheckpointGCResidualCheckpointEntryReclaimed(t *testing.T) {
 		}, nil
 	}
 
-	// round 1: the absence only arms the timer, the record survives
+	// round 1: the absence is not proven, the record survives
 	assert.NoError(t, gc.RunOnce())
 	assert.Equal(t, 0, releaser.callCount())
 	_, kept := loadRecordIDs(t)["alloc-residual"]
@@ -219,12 +287,12 @@ func TestCheckpointGCResidualCheckpointEntryReclaimed(t *testing.T) {
 	_, armed := gc.firstMissing["alloc-residual"]
 	assert.True(t, armed)
 
-	// later round: continuously absent beyond the grace period -> released
-	gc.firstMissing["alloc-residual"] = time.Now().Add(-CheckpointGCGracePeriod - time.Minute)
+	// no amount of waiting turns missing evidence into a deletion
+	gc.firstMissing["alloc-residual"] = time.Now().Add(-CheckpointGCGracePeriod - time.Hour)
 	assert.NoError(t, gc.RunOnce())
-	assert.Equal(t, []string{"uid-deleted"}, releaser.calls)
+	assert.Equal(t, 0, releaser.callCount())
 	_, kept = loadRecordIDs(t)["alloc-residual"]
-	assert.False(t, kept)
+	assert.True(t, kept)
 }
 
 // TestCheckpointGCReappearanceResetsAbsenceTimer verifies a pod reappearing
@@ -265,20 +333,13 @@ func TestCheckpointGCReappearanceResetsAbsenceTimer(t *testing.T) {
 	assert.True(t, kept)
 }
 
-// TestCheckpointGCGraceFallbackWhenStateUnavailable verifies that the grace
-// period still guards records with pod identity when the kubelet checkpoint
-// cannot be read: the pod list alone may be transiently incomplete.
-func TestCheckpointGCGraceFallbackWhenStateUnavailable(t *testing.T) {
+// TestCheckpointGCKeepsRecordWhenStateUnavailable verifies that an unreadable
+// kubelet checkpoint never leads to a deletion: the pod list alone cannot
+// prove that a pod is gone.
+func TestCheckpointGCKeepsRecordWhenStateUnavailable(t *testing.T) {
 	setupDpCheckpoint(t)
 	now := time.Now().UnixNano()
 
-	assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
-		AllocateID: "alloc-fresh",
-		PodUID:     "uid-deleted",
-		Status:     CheckpointStatusDone,
-		CreateTime: now,
-		UpdateTime: now,
-	}))
 	assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
 		AllocateID: "alloc-stale",
 		PodUID:     "uid-deleted",
@@ -292,17 +353,12 @@ func TestCheckpointGCGraceFallbackWhenStateUnavailable(t *testing.T) {
 	gc.fetchKubeletState = func() (*KubeletCheckpointState, error) {
 		return nil, fmt.Errorf("read kubelet checkpoint failed")
 	}
-	// simulate that the stale record has been absent from the kubelet state
-	// for longer than the grace period already
 	gc.firstMissing["alloc-stale"] = time.Now().Add(-CheckpointGCGracePeriod - time.Hour)
 	assert.NoError(t, gc.RunOnce())
 
-	assert.Equal(t, []string{"uid-deleted"}, releaser.calls)
-	ids := loadRecordIDs(t)
-	_, hasFresh := ids["alloc-fresh"]
-	assert.True(t, hasFresh)
-	_, hasStale := ids["alloc-stale"]
-	assert.False(t, hasStale)
+	assert.Equal(t, 0, releaser.callCount())
+	_, kept := loadRecordIDs(t)["alloc-stale"]
+	assert.True(t, kept)
 }
 
 // TestCheckpointGCKeepsRecordOnDeleteFailure verifies that the record is kept
@@ -335,9 +391,10 @@ func TestCheckpointGCKeepsRecordOnReleaseFailure(t *testing.T) {
 	}
 }
 
-// TestCheckpointGCInFlightRecordDeletedPod verifies an in-flight record of a
-// deleted pod is released through the grace fallback path after aging out.
-func TestCheckpointGCInFlightRecordDeletedPod(t *testing.T) {
+// TestCheckpointGCInFlightRecordKeptWithoutProof verifies an in-flight record
+// of a pod missing from the pod list is kept while the kubelet checkpoint is
+// unreadable.
+func TestCheckpointGCInFlightRecordKeptWithoutProof(t *testing.T) {
 	setupDpCheckpoint(t)
 	now := time.Now().UnixNano()
 
@@ -357,9 +414,9 @@ func TestCheckpointGCInFlightRecordDeletedPod(t *testing.T) {
 	gc.firstMissing["alloc-stale"] = time.Now().Add(-CheckpointGCGracePeriod - time.Hour)
 	assert.NoError(t, gc.RunOnce())
 
-	assert.Equal(t, []string{"uid-deleted"}, releaser.calls)
-	_, hasStale := loadRecordIDs(t)["alloc-stale"]
-	assert.False(t, hasStale)
+	assert.Equal(t, 0, releaser.callCount())
+	_, kept := loadRecordIDs(t)["alloc-stale"]
+	assert.True(t, kept)
 }
 
 // TestCheckpointGCRecordWithoutPodUID verifies records without pod identity:
@@ -493,10 +550,9 @@ func TestCheckpointGCFetchPodsFailureDiscardsAbsenceTimers(t *testing.T) {
 	assert.Empty(t, gc.firstMissing)
 }
 
-// TestCheckpointGCReleaseFailureKeepsTimerForRetry verifies that a failed
-// Release keeps the expired absence timer: the next round retries the release
-// immediately instead of re-arming a full grace period.
-func TestCheckpointGCReleaseFailureKeepsTimerForRetry(t *testing.T) {
+// TestCheckpointGCReleaseFailureRetriedNextRound verifies that a failed
+// Release keeps the record of a proven-gone pod so the next round retries it.
+func TestCheckpointGCReleaseFailureRetriedNextRound(t *testing.T) {
 	setupDpCheckpoint(t)
 	now := time.Now().UnixNano()
 
@@ -510,23 +566,14 @@ func TestCheckpointGCReleaseFailureKeepsTimerForRetry(t *testing.T) {
 
 	releaser := &fakeXdmReleaser{err: fmt.Errorf("xdm unavailable")}
 	gc := newTestGC(releaser, map[string]struct{}{})
-	gc.fetchKubeletState = func() (*KubeletCheckpointState, error) {
-		return &KubeletCheckpointState{
-			PodUIDs:         map[string]struct{}{"uid-deleted": {}},
-			AssignedDevices: map[string]map[string]struct{}{},
-		}, nil
-	}
-	gc.firstMissing["alloc-retry"] = time.Now().Add(-CheckpointGCGracePeriod - time.Minute)
 
-	// release fails: record and its expired absence timer must both survive
+	// release fails: the record must survive for the next round
 	assert.NoError(t, gc.RunOnce())
 	assert.Equal(t, 1, releaser.callCount())
 	_, kept := loadRecordIDs(t)["alloc-retry"]
 	assert.True(t, kept)
-	_, timerKept := gc.firstMissing["alloc-retry"]
-	assert.True(t, timerKept)
 
-	// next round retries immediately, no fresh grace period is required
+	// next round retries immediately and drops the record
 	releaser.err = nil
 	assert.NoError(t, gc.RunOnce())
 	assert.Equal(t, []string{"uid-deleted", "uid-deleted"}, releaser.calls)

@@ -37,8 +37,11 @@ const (
 	// checkpoint records against the pods still present on the node.
 	CheckpointGCInterval = 5 * time.Minute
 
-	// CheckpointGCGracePeriod bounds consecutive absence rounds before a record
-	// is treated as orphaned. The timer resets when the record reappears.
+	// CheckpointGCGracePeriod debounces the evidence for records that carry no
+	// pod identity: such a record is only treated as dead after kubelet has
+	// stopped holding its devices for this long. It is never a deadline for
+	// records bound to a pod, which are only removed once the pod is proven
+	// gone.
 	CheckpointGCGracePeriod = 30 * time.Minute
 
 	// kubelet 10255 readonly port pre-check parameters
@@ -80,16 +83,18 @@ type XdmReleaser interface {
 	Release(ctx context.Context, in *xpugrpc.ReleaseRequest, opts ...grpc.CallOption) (*xpugrpc.ReleaseResponse, error)
 }
 
-// CheckpointGC reconciles dp checkpoint records against running pods. For
-// records of deleted pods it calls xdm Release and removes the record.
+// CheckpointGC reconciles dp checkpoint records against running pods. A record
+// is released in xdm and dropped locally only when its pod is proven gone;
+// missing evidence keeps the record instead of deleting it on a timer.
 type CheckpointGC struct {
 	releaser          XdmReleaser
 	fetchPods         func() (map[string]struct{}, error)
 	fetchKubeletState func() (*KubeletCheckpointState, error)
 	interval          time.Duration
-	// firstMissing records when each record was first observed absent. The
-	// timer advances only across consecutive absent rounds and resets on
-	// reappearance. RunOnce is serial, so no lock is needed.
+	// firstMissing records when each record was first observed without
+	// evidence. For pod-bound records it only marks a suspect for logging; for
+	// pod-less records it debounces a transiently unreadable checkpoint.
+	// RunOnce is serial, so no lock is needed.
 	firstMissing map[string]time.Time
 }
 
@@ -150,16 +155,17 @@ func (gc *CheckpointGC) RunOnce() error {
 	// while the pod list may be transiently incomplete.
 	kubeletState, stateErr := gc.fetchKubeletState()
 	if stateErr != nil {
-		klog.Warningf("checkpoint GC: read kubelet checkpoint failed, fall back to the grace period: %v", stateErr)
+		klog.Warningf("checkpoint GC: read kubelet checkpoint failed, absence cannot be proven and no record will be deleted: %v", stateErr)
 	}
 
 	now := time.Now()
-	var toDelete []string
+	var toDelete []*AllocateRecord
 	for _, record := range records {
-		// alive resets absence timers; certainGone allows immediate release;
-		// everything else requires the full grace period of consecutive absence.
+		// alive: the allocation still backs a live pod. gone: the pod is
+		// proven gone by two independent sources. Everything else is missing
+		// evidence and must never be turned into a deletion by a timer.
 		alive := false
-		certainGone := false
+		gone := false
 		if record.PodUID != "" {
 			// records with pod identity are reconciled against the pod list
 			if _, running := runningPodUIDs[record.PodUID]; running {
@@ -169,9 +175,11 @@ func (gc *CheckpointGC) RunOnce() error {
 				// the old uid entry.
 				if _, holds := kubeletState.PodUIDs[record.PodUID]; !holds {
 					// absent from both independent sources: the pod is gone
-					certainGone = true
+					gone = true
 				}
 			}
+			// an unreadable kubelet checkpoint cannot prove absence, so the
+			// record is only reported as a suspect below.
 		} else {
 			// records without pod identity have no pod list entry; keep them
 			// alive while kubelet still holds their devices.
@@ -185,9 +193,20 @@ func (gc *CheckpointGC) RunOnce() error {
 			continue
 		}
 
-		if !certainGone {
-			// uncertain records need the full grace period of consecutive
-			// absence; reappearance resets the timer.
+		if !gone {
+			if record.PodUID != "" {
+				// no proof of absence: keep the record and surface the stuck
+				// evidence once so operators can investigate.
+				if _, seen := gc.firstMissing[record.AllocateID]; !seen {
+					gc.firstMissing[record.AllocateID] = now
+					klog.Warningf("checkpoint GC: cannot prove pod %s of record %s is gone, keep the record",
+						record.PodUID, record.AllocateID)
+				}
+				continue
+			}
+			// pod-less records: require kubelet to stop holding their devices
+			// across the whole grace period to debounce a checkpoint that is
+			// transiently unreadable or empty.
 			missingSince, seen := gc.firstMissing[record.AllocateID]
 			if !seen {
 				gc.firstMissing[record.AllocateID] = now
@@ -196,6 +215,22 @@ func (gc *CheckpointGC) RunOnce() error {
 			if now.Sub(missingSince) < CheckpointGCGracePeriod {
 				continue
 			}
+		}
+
+		// The snapshot above may already be stale, so re-read right before
+		// the irreversible step: a record advanced in the meantime belongs to
+		// an allocation that moved on and must not be released.
+		current, err := LoadAllocateRecord(record.AllocateID)
+		if err != nil {
+			delete(gc.firstMissing, record.AllocateID)
+			klog.Infof("checkpoint GC: record %s disappeared before release, skip it", record.AllocateID)
+			continue
+		}
+		if !sameRecordVersion(record, current) {
+			// keep it without resetting the absence timer, the next round
+			// decides again on the fresh state
+			klog.Infof("checkpoint GC: record %s changed since the snapshot, skip release this round", record.AllocateID)
+			continue
 		}
 
 		// Release cleans the xdm checkpoint and device directories. It is
@@ -207,7 +242,7 @@ func (gc *CheckpointGC) RunOnce() error {
 		}
 		delete(gc.firstMissing, record.AllocateID)
 		klog.Infof("checkpoint GC: releasing %s record %s of deleted pod %s", record.Status, record.AllocateID, record.PodUID)
-		toDelete = append(toDelete, record.AllocateID)
+		toDelete = append(toDelete, record)
 	}
 
 	// hygiene: drop absence timers whose record no longer exists, so the
@@ -227,8 +262,17 @@ func (gc *CheckpointGC) RunOnce() error {
 	if len(toDelete) == 0 {
 		return nil
 	}
-	if err := DeleteAllocateRecords(toDelete); err != nil {
+	deleted, kept, err := DeleteUnchangedAllocateRecords(toDelete)
+	if err != nil {
 		return fmt.Errorf("delete checkpoint records failed: %w", err)
+	}
+	if len(kept) > 0 {
+		// the release above already ran, but the record moved on before it
+		// could be dropped: keep it and let the next round re-decide
+		klog.Warningf("checkpoint GC: %d record(s) changed after the xdm release and were kept: %v", len(kept), kept)
+	}
+	if deleted > 0 {
+		klog.Infof("checkpoint GC: dropped %d released record(s) from the checkpoint", deleted)
 	}
 	return nil
 }
@@ -256,7 +300,7 @@ func kubeletStillAssignsDevices(assignedDevices map[string]map[string]struct{}, 
 // all allocations of the pod; fall back to allocateID for pod-less records.
 func (gc *CheckpointGC) xdmRelease(record *AllocateRecord) error {
 	if gc.releaser == nil {
-		return nil
+		return fmt.Errorf("xdm client not initialized")
 	}
 	id := record.PodUID
 	if id == "" {

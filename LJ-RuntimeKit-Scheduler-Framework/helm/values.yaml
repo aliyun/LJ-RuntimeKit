@@ -4,6 +4,6 @@
 
 images:
    scheduler:
-      image: "registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-scheduler-framework"
-      tag: v1.0.0
+      image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-scheduler-framework"
+      tag: 1.13.0-k8s1.34
       pullPolicy: IfNotPresent

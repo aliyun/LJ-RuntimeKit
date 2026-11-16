@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lj-runtimekit-job-controller
+  namespace: kube-system
+  labels:
+    app: job-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: job-controller
+  template:
+    metadata:
+      labels:
+        app: job-controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "6060"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: job-controller-sa
+      containers:
+      - name: controller
+        image: lj-runtimekit-job-controller:1.13.20-k8s1.34
+        imagePullPolicy: IfNotPresent
+        args:
+        - --namespace=kube-system
+        - --compute-domain-clique-namespace=default
+        # The controller always serves both resource.aliyun.com and
+        # resource.nvidia.com (one isolated manager set each, single Lease).
+        # Both ComputeDomain CRDs are startup dependencies: install
+        # computedomains-crd.yaml + computedomains-aliyun-crd.yaml and
+        # computedomaincliques-crd.yaml + computedomaincliques-aliyun-crd.yaml.
+        - --leader-election=true
+        - --http-endpoint=:6060
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        ports:
+        - name: http
+          containerPort: 6060
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule

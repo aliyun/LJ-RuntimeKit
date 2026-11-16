@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: job-controller-sa
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: job-controller-clusterrole
+rules:
+# ComputeDomain objects are served from both API groups. The controller always
+# serves resource.aliyun.com AND resource.nvidia.com at the same time, so both
+# groups must be granted or startup fails on the missing group's cache sync.
+- apiGroups: ["resource.aliyun.com", "resource.nvidia.com"]
+  resources: ["computedomains"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["resource.aliyun.com", "resource.nvidia.com"]
+  resources: ["computedomains/status"]
+  verbs: ["update", "patch"]
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceclaimtemplates"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+# Role for leader election Lease in kube-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: job-controller-lease-role
+  namespace: kube-system
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "create", "update"]
+---
+# Minimal Role for ComputeDomainClique operations in "default" namespace.
+# The Device Plugin is the only writer of CDClique daemon entries, so the
+# controller needs read access plus delete (for the empty-clique deletion path)
+# and deliberately has no create/update/patch permission in either API group.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: job-controller-cdclique-role
+  namespace: default
+rules:
+- apiGroups: ["resource.aliyun.com", "resource.nvidia.com"]
+  resources: ["computedomaincliques"]
+  verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: job-controller-clusterrolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: job-controller-clusterrole
+subjects:
+- kind: ServiceAccount
+  name: job-controller-sa
+  namespace: kube-system
+---
+# RoleBinding for leader election Lease in kube-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: job-controller-lease-rolebinding
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: job-controller-lease-role
+subjects:
+- kind: ServiceAccount
+  name: job-controller-sa
+  namespace: kube-system
+---
+# RoleBinding for CDClique in "default" namespace, bound to SA in kube-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: job-controller-cdclique-rolebinding
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: job-controller-cdclique-role
+subjects:
+- kind: ServiceAccount
+  name: job-controller-sa
+  namespace: kube-system

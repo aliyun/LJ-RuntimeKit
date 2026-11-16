@@ -21,12 +21,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	xpugrpc "github.com/lj-runtimekit/device-plugin/internal/grpc"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func setupDpCheckpoint(t *testing.T) {
@@ -34,6 +36,243 @@ func setupDpCheckpoint(t *testing.T) {
 	origPath := DpCheckpointPath
 	DpCheckpointPath = filepath.Join(t.TempDir(), "deviceplugin_internal_checkpoint")
 	t.Cleanup(func() { DpCheckpointPath = origPath })
+}
+
+func setupCheckpointMigration(t *testing.T) {
+	t.Helper()
+	oldPath, newPath := OldDpCheckpointPath, DpCheckpointPath
+	root := t.TempDir()
+	OldDpCheckpointPath = filepath.Join(root, "old", "deviceplugin_internal_checkpoint")
+	DpCheckpointPath = filepath.Join(root, "new", "deviceplugin_internal_checkpoint")
+	require.NoError(t, os.MkdirAll(filepath.Dir(OldDpCheckpointPath), 0755))
+	t.Cleanup(func() {
+		OldDpCheckpointPath, DpCheckpointPath = oldPath, newPath
+	})
+}
+
+func TestMigrateDpCheckpoint(t *testing.T) {
+	// 混合生命周期与未知字段，迁移须逐字节保留，不能改时间或丢记录。
+	legacy := `{"records":{"a":{"allocateID":"a","status":"allocated","createTime":1},"b":{"allocateID":"b","status":"prestart","podUID":"pod-b"},"c":{"allocateID":"c","status":"done","updateTime":2}},"futureField":"preserved"}`
+	fresh := `{"records":{"new":{"allocateID":"new","status":"done"}}}`
+	for _, tc := range []struct {
+		name       string
+		oldExists  bool
+		oldContent string
+		newExists  bool
+		newContent string
+		oldLock    bool
+		wantError  bool
+	}{
+		{name: "迁移完整旧账本", oldExists: true, oldContent: legacy, oldLock: true},
+		{name: "无旧锁也能迁移", oldExists: true, oldContent: legacy},
+		{name: "空旧账本", oldExists: true},
+		{name: "首次启动无账本"},
+		{name: "只有旧锁时创建新账本并清理旧锁", oldLock: true},
+		{name: "仅有新账本保持不变", newExists: true, newContent: fresh},
+		{name: "复制后中断可重试", oldExists: true, oldContent: legacy, newExists: true, newContent: legacy, oldLock: true},
+		{name: "新旧都存在备份旧账本", oldExists: true, oldContent: legacy, newExists: true, newContent: fresh, oldLock: true},
+		{name: "新账本存在时原样备份损坏的旧文件", oldExists: true, oldContent: "{broken", newExists: true, newContent: fresh, oldLock: true},
+		{name: "旧账本损坏保留原件", oldExists: true, oldContent: "{broken", oldLock: true, wantError: true},
+		{name: "新账本损坏禁止启动", newExists: true, newContent: "{broken", wantError: true},
+		{name: "清理迁移后残留的旧锁", newExists: true, newContent: fresh, oldLock: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupCheckpointMigration(t)
+			if tc.oldExists {
+				require.NoError(t, os.WriteFile(OldDpCheckpointPath, []byte(tc.oldContent), 0644))
+			}
+			if tc.oldLock {
+				require.NoError(t, os.WriteFile(OldDpCheckpointPath+".lock", nil, 0644))
+			}
+			if tc.newExists {
+				require.NoError(t, os.MkdirAll(filepath.Dir(DpCheckpointPath), 0755))
+				require.NoError(t, os.WriteFile(DpCheckpointPath, []byte(tc.newContent), 0644))
+			}
+
+			err := MigrateDpCheckpoint()
+			if tc.wantError {
+				require.Error(t, err)
+				if tc.oldExists {
+					content, err := os.ReadFile(OldDpCheckpointPath)
+					require.NoError(t, err)
+					assert.Equal(t, tc.oldContent, string(content))
+					assert.FileExists(t, OldDpCheckpointPath+".lock")
+				}
+				if tc.newExists {
+					content, err := os.ReadFile(DpCheckpointPath)
+					require.NoError(t, err)
+					assert.Equal(t, tc.newContent, string(content))
+				} else {
+					assert.NoFileExists(t, DpCheckpointPath)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.NoFileExists(t, OldDpCheckpointPath)
+			assert.NoFileExists(t, OldDpCheckpointPath+".lock")
+			assert.FileExists(t, DpCheckpointPath+".lock")
+			want := `{"records":{}}`
+			if tc.newExists {
+				want = tc.newContent
+			} else if tc.oldExists {
+				want = tc.oldContent
+			}
+			content, err := os.ReadFile(DpCheckpointPath)
+			require.NoError(t, err)
+			assert.Equal(t, want, string(content))
+			backups, err := filepath.Glob(DpCheckpointPath + ".bak-*")
+			require.NoError(t, err)
+			if tc.oldExists && tc.newExists {
+				require.Len(t, backups, 1)
+				backup, err := os.ReadFile(backups[0])
+				require.NoError(t, err)
+				assert.Equal(t, tc.oldContent, string(backup))
+			} else {
+				assert.Empty(t, backups)
+			}
+			// 后续分配必须继续写入新目录，重启不应恢复旧记录。
+			require.NoError(t, SaveAllocateRecord(&AllocateRecord{AllocateID: "after-migration", Status: CheckpointStatusAllocated}))
+			before, err := os.ReadFile(DpCheckpointPath)
+			require.NoError(t, err)
+			require.NoError(t, MigrateDpCheckpoint())
+			after, err := os.ReadFile(DpCheckpointPath)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+			assert.NoFileExists(t, OldDpCheckpointPath)
+			assert.NoFileExists(t, OldDpCheckpointPath+".lock")
+		})
+	}
+}
+
+func TestMigrateDpCheckpointKeepsExistingBackups(t *testing.T) {
+	setupCheckpointMigration(t)
+	require.NoError(t, SaveAllocateRecord(&AllocateRecord{AllocateID: "active", Status: CheckpointStatusDone}))
+	active, err := os.ReadFile(DpCheckpointPath)
+	require.NoError(t, err)
+
+	// 模拟两次升级均带来旧账本，各次备份不得互相覆盖。
+	for _, content := range []string{"legacy-one", "legacy-two"} {
+		require.NoError(t, os.WriteFile(OldDpCheckpointPath, []byte(content), 0644))
+		require.NoError(t, MigrateDpCheckpoint())
+		assert.NoFileExists(t, OldDpCheckpointPath)
+	}
+	backups, err := filepath.Glob(DpCheckpointPath + ".bak-*")
+	require.NoError(t, err)
+	require.Len(t, backups, 2)
+	var contents []string
+	for _, backup := range backups {
+		// 后缀必须包含可解析的日期、时分秒及九位小数。
+		suffix := backup[len(DpCheckpointPath+".bak-"):]
+		require.Len(t, suffix, len("20060102-150405.000000000"))
+		_, err := time.Parse("20060102-150405.000000000", suffix)
+		require.NoError(t, err)
+		content, err := os.ReadFile(backup)
+		require.NoError(t, err)
+		contents = append(contents, string(content))
+	}
+	assert.ElementsMatch(t, []string{"legacy-one", "legacy-two"}, contents)
+	after, err := os.ReadFile(DpCheckpointPath)
+	require.NoError(t, err)
+	assert.Equal(t, active, after)
+	records, err := ListAllRecords()
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "active", records[0].AllocateID)
+}
+
+func TestMigrateDpCheckpointOldLockBusy(t *testing.T) {
+	setupCheckpointMigration(t)
+	content := []byte(`{"records":{}}`)
+	require.NoError(t, os.WriteFile(OldDpCheckpointPath, content, 0644))
+	oldLock, err := acquireCheckpointLock(OldDpCheckpointPath+".lock", syscall.LOCK_EX)
+	require.NoError(t, err)
+	defer oldLock.Close()
+
+	require.Error(t, MigrateDpCheckpoint())
+	assert.FileExists(t, OldDpCheckpointPath+".lock")
+	assert.NoFileExists(t, DpCheckpointPath)
+	remaining, err := os.ReadFile(OldDpCheckpointPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, remaining)
+
+	releaseLock(oldLock)
+	require.NoError(t, MigrateDpCheckpoint())
+	assert.NoFileExists(t, OldDpCheckpointPath)
+}
+
+func TestMigrateDpCheckpointDestinationFailure(t *testing.T) {
+	for _, tc := range []string{"父路径是文件", "目标路径是目录"} {
+		t.Run(tc, func(t *testing.T) {
+			setupCheckpointMigration(t)
+			content := []byte(`{"records":{}}`)
+			require.NoError(t, os.WriteFile(OldDpCheckpointPath, content, 0644))
+			require.NoError(t, os.WriteFile(OldDpCheckpointPath+".lock", nil, 0644))
+			if tc == "父路径是文件" {
+				require.NoError(t, os.WriteFile(filepath.Dir(DpCheckpointPath), nil, 0644))
+			} else {
+				require.NoError(t, os.MkdirAll(DpCheckpointPath, 0755))
+			}
+			require.Error(t, MigrateDpCheckpoint())
+			remaining, err := os.ReadFile(OldDpCheckpointPath)
+			require.NoError(t, err)
+			assert.Equal(t, content, remaining)
+			assert.FileExists(t, OldDpCheckpointPath+".lock")
+		})
+	}
+}
+
+func TestMigrateDpCheckpointConcurrent(t *testing.T) {
+	setupCheckpointMigration(t)
+	content := []byte(`{"records":{"a":{"allocateID":"a","status":"done"}}}`)
+	require.NoError(t, os.WriteFile(OldDpCheckpointPath, content, 0644))
+	var wg sync.WaitGroup
+	errors := make(chan error, 8)
+	for i := 0; i < cap(errors); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errors <- MigrateDpCheckpoint()
+		}()
+	}
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	migrated, err := os.ReadFile(DpCheckpointPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, migrated)
+	assert.NoFileExists(t, OldDpCheckpointPath)
+	assert.NoFileExists(t, OldDpCheckpointPath+".lock")
+}
+
+func TestCopyCheckpointPublicationFailure(t *testing.T) {
+	setupCheckpointMigration(t)
+	content := []byte(`{"records":{}}`)
+	require.NoError(t, os.WriteFile(OldDpCheckpointPath, content, 0644))
+	// 目标是目录时，临时文件已写入并落盘，但原子发布必然失败。
+	require.NoError(t, os.MkdirAll(DpCheckpointPath, 0755))
+	require.Error(t, copyCheckpointLocked(DpCheckpointPath, content))
+	remaining, err := os.ReadFile(OldDpCheckpointPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, remaining)
+	assert.DirExists(t, DpCheckpointPath)
+	temps, err := filepath.Glob(filepath.Join(filepath.Dir(DpCheckpointPath), ".checkpoint-migration-*"))
+	require.NoError(t, err)
+	assert.Empty(t, temps)
+}
+
+func TestMigrateDpCheckpointSamePath(t *testing.T) {
+	setupCheckpointMigration(t)
+	OldDpCheckpointPath = DpCheckpointPath
+	require.NoError(t, SaveAllocateRecord(&AllocateRecord{AllocateID: "same-path"}))
+	before, err := os.ReadFile(DpCheckpointPath)
+	require.NoError(t, err)
+	require.NoError(t, MigrateDpCheckpoint())
+	after, err := os.ReadFile(DpCheckpointPath)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.FileExists(t, DpCheckpointPath+".lock")
 }
 
 func TestGenerateAllocateIDUnique(t *testing.T) {
@@ -106,30 +345,33 @@ func TestFindRecordPrefersNewest(t *testing.T) {
 	assert.Equal(t, "alloc-new", found.AllocateID)
 }
 
-// TestPruneExpiredRecords verifies that SaveAllocateRecord drops finished
-// records older than the done TTL and any record older than the max age
-// leak guard, while keeping fresh records.
-func TestPruneExpiredRecords(t *testing.T) {
+// TestSaveAllocateRecordKeepsAllRecords verifies that saving a record never
+// drops existing ones, whatever their status or age: a record may only be
+// removed by the GC after the pod behind it is proven gone.
+func TestSaveAllocateRecordKeepsAllRecords(t *testing.T) {
 	setupDpCheckpoint(t)
 
 	now := time.Now().UnixNano()
-	// expired done record
+	old := now - int64(30*24*time.Hour)
+	// long finished record of a running pod
 	assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
-		AllocateID:   "alloc-done-expired",
+		AllocateID:   "alloc-done-old",
 		ResourceName: ResourceCore,
 		DeviceIDs:    []string{"COMP-0-_0"},
 		Status:       CheckpointStatusDone,
-		CreateTime:   now - int64(CheckpointDoneRecordTTL) - int64(time.Hour),
+		CreateTime:   old,
+		UpdateTime:   old,
 	}))
-	// leaked allocated record far beyond the max age guard
+	// long leaked in-flight record
 	assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
 		AllocateID:   "alloc-leaked",
 		ResourceName: ResourceCore,
 		DeviceIDs:    []string{"COMP-1-_0"},
 		Status:       CheckpointStatusAllocated,
-		CreateTime:   now - int64(CheckpointMaxRecordAge) - int64(time.Hour),
+		CreateTime:   old,
+		UpdateTime:   old,
 	}))
-	// fresh record: the save of this one triggers the pruning
+	// fresh record: the save of this one must not drop the two above
 	assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
 		AllocateID:   "alloc-fresh",
 		ResourceName: ResourceCore,
@@ -144,9 +386,53 @@ func TestPruneExpiredRecords(t *testing.T) {
 		Records map[string]*AllocateRecord `json:"records"`
 	}
 	assert.NoError(t, json.Unmarshal(content, &data))
-	assert.Len(t, data.Records, 1)
-	_, ok := data.Records["alloc-fresh"]
-	assert.True(t, ok)
+	assert.Len(t, data.Records, 3)
+	for _, id := range []string{"alloc-done-old", "alloc-leaked", "alloc-fresh"} {
+		_, ok := data.Records[id]
+		assert.True(t, ok, "record %s must survive", id)
+	}
+}
+
+// TestDeleteUnchangedAllocateRecords verifies the conditional delete: records
+// that still match the snapshot are dropped, while the ones another writer
+// advanced (or already removed) survive.
+func TestDeleteUnchangedAllocateRecords(t *testing.T) {
+	setupDpCheckpoint(t)
+
+	for _, id := range []string{"alloc-same", "alloc-advanced", "alloc-removed"} {
+		assert.NoError(t, SaveAllocateRecord(&AllocateRecord{
+			AllocateID: id,
+			Status:     CheckpointStatusAllocated,
+		}))
+	}
+	snapSame, err := LoadAllocateRecord("alloc-same")
+	assert.NoError(t, err)
+	snapAdvanced, err := LoadAllocateRecord("alloc-advanced")
+	assert.NoError(t, err)
+	snapRemoved, err := LoadAllocateRecord("alloc-removed")
+	assert.NoError(t, err)
+
+	// after the snapshot one record is advanced by PreStart, one is removed
+	assert.NoError(t, UpdateAllocateRecord("alloc-advanced", func(r *AllocateRecord) {
+		r.PodUID = "uid-1"
+		r.Status = CheckpointStatusDone
+	}))
+	_, _, err = DeleteUnchangedAllocateRecords([]*AllocateRecord{snapRemoved})
+	assert.NoError(t, err)
+
+	deleted, kept, err := DeleteUnchangedAllocateRecords([]*AllocateRecord{snapSame, snapAdvanced, snapRemoved})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, deleted)
+	assert.Equal(t, []string{"alloc-advanced"}, kept)
+
+	records, err := ListAllRecords()
+	assert.NoError(t, err)
+	assert.Len(t, records, 1)
+	assert.Equal(t, "alloc-advanced", records[0].AllocateID)
+
+	// a missing record is reported as an error, not as an empty record
+	_, err = LoadAllocateRecord("alloc-same")
+	assert.Error(t, err)
 }
 
 func TestUpdateAllocateRecord(t *testing.T) {

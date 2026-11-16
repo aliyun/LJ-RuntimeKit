@@ -22,7 +22,7 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/lj-runtimekit/device-plugin/internal/feature"
+	"github.com/lj-runtimekit/device-plugin/internal/feature"
 	xpuserver "github.com/lj-runtimekit/device-plugin/internal/gpu"
 	"github.com/lj-runtimekit/device-plugin/internal/utils"
 
@@ -31,15 +31,22 @@ import (
 )
 
 type options struct {
-	flags         []cli.Flag
-	memoryUnit    string
-	featureGates  string
-	logDir        string
-	logFile       string
-	logToStderr   bool
-	verbosity     int
-	checkReady    bool
-	retryInterval time.Duration
+	flags                         []cli.Flag
+	memoryUnit                    string
+	featureGates                  string
+	logDir                        string
+	logFile                       string
+	logToStderr                   bool
+	verbosity                     int
+	checkReady                    bool
+	retryInterval                 time.Duration
+	nodeName                      string
+	namespace                     string
+	runtimekitEndpoint            string
+	kubeletRegistrarDirectoryPath string
+	kubeletPluginsDirectoryPath   string
+	kubeconfig                    string
+	maxNodesPerIMEXDomain         int
 }
 
 func main() {
@@ -133,6 +140,7 @@ func main() {
 			Destination: &o.retryInterval,
 		},
 	}
+	c.Flags = append(c.Flags, computeDomainFlags(o)...)
 
 	o.flags = c.Flags
 
@@ -145,6 +153,12 @@ func main() {
 
 func start(c *cli.Context, o *options) error {
 	klog.Infof("starting LJ RuntimeKit Device Plugin server")
+
+	if utils.DefaultFeatureGate.Enabled(feature.ComputeDomain) {
+		if err := startComputeDomain(o); err != nil {
+			klog.Errorf("failed to start embedded compute-domain plugin: %v", err)
+		}
+	}
 
 	memoryUnit := utils.MemoryUnit(o.memoryUnit)
 	switch memoryUnit {

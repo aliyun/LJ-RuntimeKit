@@ -6,13 +6,13 @@ metadata:
   name: lj-runtimekit-device-plugin
 rules:
 - apiGroups:
-    - ""
+  - ""
   resources:
-    - nodes/proxy
+  - nodes/proxy
   verbs:
-    - get
-    - list
-    - watch
+  - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -53,6 +53,36 @@ rules:
   verbs:
   - patch
   - update
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceslices
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - delete
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceclaims
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - resource.aliyun.com
+  resources:
+  - computedomaincliques
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - delete
 ---
 apiVersion: v1
 kind: ServiceAccount

@@ -56,7 +56,7 @@ parameters or environment variables.
 To build the LJ RuntimeKit Exporter from source, clone the repository and build the binary with:
 ```
 git clone https://github.com/aliyun/LJ-RuntimeKit.git
-cd LJ-RuntimeKit-Exporter
+cd LJ-RuntimeKit/LJ-RuntimeKit-Exporter
 ```
 
 #### Installation

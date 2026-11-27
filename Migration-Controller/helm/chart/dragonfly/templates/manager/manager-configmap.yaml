@@ -1,0 +1,83 @@
+{{- if .Values.manager.enable }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "dragonfly.manager.fullname" . }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels:
+    app: {{ template "dragonfly.fullname" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: {{ .Values.manager.name }}
+data:
+  manager.yaml: |-
+    server:
+      rest:
+        addr: :{{ .Values.manager.restPort }}
+        {{- if and .Values.manager.config.server.rest.tls.cert .Values.manager.config.server.rest.tls.cert}}
+        tls:
+          cert: {{ .Values.manager.config.server.rest.tls.cert }}
+          key: {{ .Values.manager.config.server.rest.tls.key }}
+        {{- end }}
+      grpc:
+        advertiseIP: {{ .Values.manager.config.server.grpc.advertiseIP }}
+        port:
+          start: {{ .Values.manager.grpcPort }}
+          end: {{ .Values.manager.grpcPort }}
+      workHome: {{ .Values.manager.config.server.workHome }}
+      logDir: {{ .Values.manager.config.server.logDir }}
+      cacheDir: {{ .Values.manager.config.server.cacheDir }}
+      pluginDir: {{ .Values.manager.config.server.pluginDir }}
+    auth:
+{{ toYaml .Values.manager.config.auth | indent 6 }}
+    database:
+      mysql:
+        {{- if and .Values.mysql.enable (empty .Values.externalMysql.host)}}
+        user: {{ .Values.mysql.auth.username }}
+        password: {{ .Values.mysql.auth.password }}
+        host: {{ .Release.Name }}-{{ default "mysql" .Values.mysql.fullname }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}
+        port: {{ .Values.mysql.primary.service.port }}
+        dbname: {{ .Values.mysql.auth.database }}
+        migrate: {{ .Values.mysql.migrate }}
+        {{- else }}
+        user: {{ .Values.externalMysql.username }}
+        password: {{ .Values.externalMysql.password }}
+        host: {{ .Values.externalMysql.host }}
+        port: {{ .Values.externalMysql.port }}
+        dbname: {{ .Values.externalMysql.database }}
+        migrate: {{ .Values.externalMysql.migrate }}
+        {{- end }}
+      redis:
+        {{- if .Values.redis.enable }}
+        addrs:
+        - {{ .Release.Name }}-{{ default "redis" .Values.redis.fullname }}-master.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.redis.master.service.ports.redis }}
+        password: {{ .Values.redis.auth.password }}
+        {{- else }}
+        addrs:
+{{ toYaml .Values.externalRedis.addrs | indent 10 }}
+        masterName: {{ .Values.externalRedis.masterName }}
+        username: {{ .Values.externalRedis.username }}
+        password: {{ .Values.externalRedis.password }}
+        db: {{ .Values.externalRedis.db }}
+        brokerDB: {{ .Values.externalRedis.brokerDB }}
+        backendDB: {{ .Values.externalRedis.backendDB }}
+        {{- end }}
+    cache:
+{{ toYaml .Values.manager.config.cache | indent 6 }}
+    job:
+{{ toYaml .Values.manager.config.job | indent 6 }}
+    network:
+{{ toYaml .Values.manager.config.network | indent 6 }}
+    metrics:
+      enable: {{ .Values.manager.metrics.enable }}
+      addr: ":8000"
+    console: {{ .Values.manager.config.console }}
+    verbose: {{ .Values.manager.config.verbose }}
+    {{- if .Values.manager.config.verbose }}
+    pprof-port: {{ .Values.manager.config.pprofPort }}
+    {{- end }}
+    {{- if .Values.manager.config.jaeger }}
+    jaeger: {{ .Values.manager.config.jaeger }}
+    {{- end }}
+{{- end }}

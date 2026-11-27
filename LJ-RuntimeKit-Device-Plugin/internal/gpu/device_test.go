@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	xpugrpc "github.com/lj-runtimekit/device-plugin/internal/grpc"
 	"github.com/lj-runtimekit/device-plugin/internal/utils"
@@ -100,6 +101,26 @@ func (m *MockXpuDeviceManagerServiceClient) RestoreCPU(ctx context.Context, in *
 }
 
 func (m *MockXpuDeviceManagerServiceClient) RestoreXPU(ctx context.Context, in *xpugrpc.RestoreXPURequest, opts ...grpc.CallOption) (*xpugrpc.RestoreXPUResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *MockXpuDeviceManagerServiceClient) StartIMEX(ctx context.Context, in *xpugrpc.StartIMEXRequest, opts ...grpc.CallOption) (*xpugrpc.StartIMEXResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *MockXpuDeviceManagerServiceClient) StopIMEX(ctx context.Context, in *xpugrpc.StopIMEXRequest, opts ...grpc.CallOption) (*xpugrpc.StopIMEXResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *MockXpuDeviceManagerServiceClient) RefreshIMEX(ctx context.Context, in *xpugrpc.RefreshIMEXRequest, opts ...grpc.CallOption) (*xpugrpc.RefreshIMEXResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *MockXpuDeviceManagerServiceClient) GetNodeInfo(ctx context.Context, in *xpugrpc.GetNodeInfoRequest, opts ...grpc.CallOption) (*xpugrpc.GetNodeInfoResponse, error) {
 	//TODO implement me
 	panic("implement me")
 }
@@ -241,90 +262,118 @@ func TestGrpcListAndWatch_Success(t *testing.T) {
 
 	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(stream, nil)
 
-	GrpcListAndWatch(client, cache)
+	GrpcListAndWatch(context.Background(), client, cache)
 
 	assert.Len(t, cache.Cache, 2)
 	assert.Equal(t, "dev1", cache.Cache[0].Id)
 	assert.Equal(t, "dev2", cache.Cache[1].Id)
 }
 
-func TestGrpcListAndWatch_StreamEOF(t *testing.T) {
+// A stream that cannot be established is retried instead of dereferenced: the
+// stub returns a nil stream together with the error.
+func TestGrpcListAndWatch_RetriesAfterEstablishFailure(t *testing.T) {
+	shortenListAndWatchRetry(t)
+
 	client := new(MockXpuDeviceManagerServiceClient)
-	stream := &MockStream{
-		recvFuncs: []func() (*xpugrpc.ListAndWatchResponse, error){
-			func() (*xpugrpc.ListAndWatchResponse, error) {
-				return nil, io.EOF
-			},
-		},
-	}
 	cache := utils.NewDeviceMeta()
+	client.On("ListAndWatch", mock.Anything, mock.Anything).
+		Return(nil, errors.New("xdm socket not ready")).Once()
+	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(&MockStream{
+		recvFuncs: []func() (*xpugrpc.ListAndWatchResponse, error){
+			snapshotOf(minorDevice("dev2", "1")),
+		},
+	}, nil).Once()
 
-	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(stream, nil)
+	GrpcListAndWatch(context.Background(), client, cache)
 
-	GrpcListAndWatch(client, cache)
-
-	assert.Empty(t, cache.Cache)
+	client.AssertNumberOfCalls(t, "ListAndWatch", 2)
+	assert.Len(t, cache.Cache, 1)
+	assert.Equal(t, "dev2", cache.Cache[1].Id)
 }
 
-func TestGrpcListAndWatch_RecvError(t *testing.T) {
+// A broken stream keeps returning its last error, so the retry has to open a new
+// one instead of recv'ing the same stream again.
+func TestGrpcListAndWatch_RetriesAfterRecvError(t *testing.T) {
+	shortenListAndWatchRetry(t)
+
 	client := new(MockXpuDeviceManagerServiceClient)
-	stream := &MockStream{
+	cache := utils.NewDeviceMeta()
+	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(&MockStream{
 		recvFuncs: []func() (*xpugrpc.ListAndWatchResponse, error){
 			func() (*xpugrpc.ListAndWatchResponse, error) {
-				return nil, errors.New("some error")
-			},
-			func() (*xpugrpc.ListAndWatchResponse, error) {
-				return nil, io.EOF
+				return nil, errors.New("transport is closing")
 			},
 		},
-	}
-	cache := utils.NewDeviceMeta()
+	}, nil).Once()
+	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(&MockStream{
+		recvFuncs: []func() (*xpugrpc.ListAndWatchResponse, error){
+			snapshotOf(minorDevice("dev1", "0")),
+		},
+	}, nil).Once()
 
-	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(stream, nil)
+	GrpcListAndWatch(context.Background(), client, cache)
 
-	GrpcListAndWatch(client, cache)
-
-	assert.Empty(t, cache.Cache)
+	client.AssertNumberOfCalls(t, "ListAndWatch", 2)
+	assert.Len(t, cache.Cache, 1)
+	assert.Equal(t, "dev1", cache.Cache[0].Id)
 }
 
-func TestGrpcListAndWatch_NilResponse(t *testing.T) {
+// A nil or empty snapshot carries no device: the stream stays open and the next
+// frame is awaited on the same connection.
+func TestGrpcListAndWatch_SkipsEmptySnapshot(t *testing.T) {
 	client := new(MockXpuDeviceManagerServiceClient)
-	stream := &MockStream{
+	cache := utils.NewDeviceMeta()
+	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(&MockStream{
 		recvFuncs: []func() (*xpugrpc.ListAndWatchResponse, error){
 			func() (*xpugrpc.ListAndWatchResponse, error) {
 				return nil, nil
 			},
 			func() (*xpugrpc.ListAndWatchResponse, error) {
-				return nil, io.EOF
+				return &xpugrpc.ListAndWatchResponse{}, nil
 			},
+			snapshotOf(minorDevice("dev1", "0")),
 		},
-	}
+	}, nil).Once()
+
+	GrpcListAndWatch(context.Background(), client, cache)
+
+	client.AssertNumberOfCalls(t, "ListAndWatch", 1)
+	assert.Len(t, cache.Cache, 1)
+	assert.Equal(t, "dev1", cache.Cache[0].Id)
+}
+
+// A cancelled context ends the retry loop instead of keeping it alive forever.
+func TestGrpcListAndWatch_StopsOnContextCancel(t *testing.T) {
+	client := new(MockXpuDeviceManagerServiceClient)
 	cache := utils.NewDeviceMeta()
 
-	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(stream, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	GrpcListAndWatch(client, cache)
+	client.On("ListAndWatch", mock.Anything, mock.Anything).
+		Return(nil, errors.New("xdm unreachable")).
+		Run(func(mock.Arguments) { cancel() })
+
+	done := make(chan struct{})
+	go func() {
+		GrpcListAndWatch(ctx, client, cache)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("listAndWatch did not stop after the context was cancelled")
+	}
 
 	assert.Empty(t, cache.Cache)
 }
 
-func TestGrpcListAndWatch_EmptyDevices(t *testing.T) {
-	client := new(MockXpuDeviceManagerServiceClient)
-	stream := &MockStream{
-		recvFuncs: []func() (*xpugrpc.ListAndWatchResponse, error){
-			func() (*xpugrpc.ListAndWatchResponse, error) {
-				return &xpugrpc.ListAndWatchResponse{Devices: []*xpugrpc.Device{}}, nil
-			},
-			func() (*xpugrpc.ListAndWatchResponse, error) {
-				return nil, io.EOF
-			},
-		},
-	}
-	cache := utils.NewDeviceMeta()
-
-	client.On("ListAndWatch", mock.Anything, mock.Anything).Return(stream, nil)
-
-	GrpcListAndWatch(client, cache)
-
-	assert.Empty(t, cache.Cache)
+// shortenListAndWatchRetry keeps the retry tests fast without changing the
+// production delay.
+func shortenListAndWatchRetry(t *testing.T) {
+	t.Helper()
+	old := listAndWatchRetryDelay
+	listAndWatchRetryDelay = time.Millisecond
+	t.Cleanup(func() { listAndWatchRetryDelay = old })
 }

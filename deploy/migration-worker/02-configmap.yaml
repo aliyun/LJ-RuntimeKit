@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lj-runtimekit-migration-controller-config
+  namespace: kube-system
+  labels:
+    migration.io/container-state-migration-config: "true"
+data:
+  grpcPort: "50051"
+  template: |
+    metadata:
+      annotations:
+      labels:
+        component: lj-runtimekit-migration-worker
+    spec:
+      hostNetwork: true
+      serviceAccount: lj-runtimekit-migration-worker
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: migration-worker
+          image: lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-migration-worker:v1.14.0-k8s1.34
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/migration-worker
+            - --v=4
+          # The worker needs to extract checkpoint data into the hostPath
+          # directory keeping the original owner/permissions, and talks to the
+          # node-side XDM over a unix socket, so it needs privileges.
+          securityContext:
+            privileged: true
+          resources:
+            limits:
+              memory: "2Gi"
+            requests:
+              memory: "0"
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Doubles as the preheat origin station: when the worker registers
+            # itself into the resident Service via a self-written EndpointSlice it
+            # needs its own pod name (slice naming), pod UID (ownerReference, GC
+            # reclamation anchor) and node IP (endpoint address under hostNetwork).
+            # When missing, the double-duty origin skips registration and only
+            # warns; the restore main path is unaffected.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          volumeMounts:
+            - name: migration
+              mountPath: /home/admin/t4/migration
+            - name: xdm-socket
+              mountPath: /run/amp/eKitC/xdm/sockets
+            - name: dfdaemon
+              mountPath: /var/run/dragonfly
+            # efc storage type: the worker reads the host EFC mount (/mnt/efc)
+            # directly to pull the checkpoint. HostToContainer propagation: the EFC
+            # mount may be remounted or switched to another bucket by the watchdog;
+            # the default rprivate would keep the stale snapshot from creation time
+            # and break the path.
+            - name: efc
+              mountPath: /mnt/efc
+              mountPropagation: HostToContainer
+      volumes:
+        - name: migration
+          hostPath:
+            path: /home/admin/t4/migration
+        - name: xdm-socket
+          hostPath:
+            path: /run/amp/eKitC/xdm/sockets
+        - name: dfdaemon
+          hostPath:
+            path: /var/run/dragonfly
+        - name: efc
+          hostPath:
+            path: /mnt/efc

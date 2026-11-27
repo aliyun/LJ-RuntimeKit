@@ -59,7 +59,7 @@ func TestPatchPodAssigned(t *testing.T) {
 			name:        "invalid flag",
 			idList:      []int{0},
 			patchMap:    nil,
-			flags:       []assignedFlag{3}, // not in patchAnnotationRes2AssignedFlag
+			flags:       []assignedFlag{4}, // not in patchAnnotationRes2AssignedFlag
 			expectError: true,
 		},
 	}

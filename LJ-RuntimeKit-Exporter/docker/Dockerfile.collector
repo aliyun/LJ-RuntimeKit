@@ -1,0 +1,25 @@
+ARG GOLANG_VERSION=1.21.13
+ARG BUILDER_IMAGE=golang:${GOLANG_VERSION}
+ARG BASE_IMAGE=debian:bullseye-slim
+
+FROM --platform=$BUILDPLATFORM ${BUILDER_IMAGE} AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG GOPROXY=https://mirrors.aliyun.com/goproxy/,https://goproxy.cn/,direct
+ARG VERSION=v1.0.0
+ENV CGO_ENABLED=0 GOPROXY=${GOPROXY}
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY api/rtkit/profiling/ api/rtkit/profiling/
+COPY pkg/collector/ pkg/collector/
+COPY pkg/safefs/ pkg/safefs/
+COPY cmd/collector/ cmd/collector/
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=readonly -trimpath \
+    -ldflags="-s -w -X main.BuildVersion=${VERSION}" -buildvcs=false \
+    -o /out/profiling-collector ./cmd/collector
+
+FROM ${BASE_IMAGE} AS profiling-collector
+LABEL io.k8s.display-name="profiling-collector"
+COPY --from=builder /out/profiling-collector /bin/profiling-collector
+ENTRYPOINT ["/bin/profiling-collector"]

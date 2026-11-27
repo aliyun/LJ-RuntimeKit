@@ -16,7 +16,7 @@ limitations under the License.
 
 // config_service.proto
 // amp-config-daemon gRPC 接口定义
-// 提供 3 个 RPC：Enable（开启 eKitC）、Disable（关闭 eKitC）、QueryStatus（查询状态）
+// 提供 4 个 RPC：Enable（开启 eKitC）、Disable（关闭 eKitC）、QueryStatus（查询状态）、QueryVersion（查询版本）
 
 syntax = "proto3";
 
@@ -32,6 +32,8 @@ service AmpConfigService {
   rpc Disable(DisableRequest) returns (DisableResponse);
   // QueryStatus 查询当前 eKitC 是否已开启
   rpc QueryStatus(QueryStatusRequest) returns (QueryStatusResponse);
+  // QueryVersion 查询版本信息
+  rpc QueryVersion(QueryVersionRequest) returns (QueryVersionResponse);
 }
 
 message EnableRequest {}
@@ -58,7 +60,14 @@ message DisableResponse {
 
 message QueryStatusRequest {}
 
+message QueryVersionRequest {}
+
 message QueryStatusResponse {
   bool enabled = 1;       // eKitC 是否开启
   string message = 2;
+}
+
+message QueryVersionResponse {
+  string version = 1;       // pack_AMP_PACK_VERSION 值
+  string message = 2;       // 错误信息（如文件不存在）
 }

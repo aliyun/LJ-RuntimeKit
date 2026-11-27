@@ -1,0 +1,19 @@
+{{- if .Values.client.dfinit.enable }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "dragonfly.dfinit.fullname" . }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels:
+    app: {{ template "dragonfly.fullname" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: {{ .Values.client.name }}
+data:
+  dfinit.yaml: |-
+    proxy:
+      addr: {{ .Values.client.dfinit.config.proxy.addr }}
+    containerRuntime:
+{{ toYaml .Values.client.dfinit.config.containerRuntime | indent 6 }}
+{{- end }}

@@ -39,6 +39,17 @@ func GetPodResource(pod *v1.Pod, resourceName string) uint {
 	return total
 }
 
+// IsMigSlicePod reports whether the pod's gpu-slice request asks for MIG
+// instances. gpu-slice is a dual-mode resource: with rt_mig_enable=true it
+// means MIG slices, without the label the same request means MPS compute (TPC)
+// slices, which xdm only books without creating any MIG instance.
+func IsMigSlicePod(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	return pod.Labels[LabelMigEnable] == "true"
+}
+
 // IsWholeCardPod reports whether the total gpu-core limit reaches
 // WholeCardCore; invalid amounts above it still count.
 func IsWholeCardPod(pod *v1.Pod) bool {

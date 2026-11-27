@@ -2,7 +2,7 @@
 
 > 适用集群：Kubernetes v1.30.x（containerd 运行时）
 > JobSet 版本：v0.7.2
-> 已验证环境：192.168.0.8 集群（3 节点，经跳板机 8.160.167.12 访问）
+> 本文以三节点集群为例；节点地址、网络出口与镜像源请按实际环境配置。
 
 ---
 
@@ -41,7 +41,7 @@ curl -sI --connect-timeout 5 https://k8s.m.daocloud.io/v2/ | head -1   # 可达�
 curl -sI --connect-timeout 5 https://registry.k8s.io/v2/ | head -1     # 通常内网不可达
 ```
 
-**本集群结论**：节点可访问 daocloud 镜像源与杭州 ACR，不可访问 Docker Hub / registry.k8s.io / quay.io 原始地址。因此镜像走 **daocloud 源 docker pull → ctr 导入 containerd** 路线。
+**镜像准备策略**：若节点可访问 daocloud 镜像源，但无法访问 Docker Hub / registry.k8s.io / quay.io 原始地址，可使用 **daocloud 源 docker pull → ctr 导入 containerd** 路线；请先确认目标环境的网络出口。
 
 ---
 
@@ -202,7 +202,7 @@ spec:
               restartPolicy: Never
               containers:
               - name: busy
-                image: registry.cn-hangzhou.aliyuncs.com/eflops-amp/ubuntu:22.04
+                image: docker.io/library/ubuntu:22.04
                 command: ["sleep", "30"]
 EOF
 kubectl apply -f /tmp/jobset-smoke.yaml
@@ -215,7 +215,7 @@ kubectl get pod | grep smoke   # worker Pod 全部 Completed
 kubectl delete jobset smoke-test
 ```
 
-**192.168.0.8 集群实测结果**：JobSet 创建 → 派生 2 Pod → 全部完成 → `TERMINALSTATE=Completed`，端到端通过。
+**预期验证结果**：JobSet 创建 → 派生 2 Pod → 全部完成 → `TERMINALSTATE=Completed`；请在目标集群执行验证。
 
 ---
 
@@ -232,7 +232,7 @@ kubectl delete jobset smoke-test
 
 ---
 
-## 九、本次部署清单（192.168.0.8 集群实际落盘文件）
+## 九、部署清单示例
 
 位于 control-plane 节点 `/tmp/`：
 
@@ -243,4 +243,4 @@ kubectl delete jobset smoke-test
 | `/tmp/jobset-webhook.yaml` | cert secret + Mutating/Validating WebhookConfiguration |
 | `/tmp/jobset-images.tar` | 两个控制器镜像打包（114MB） |
 
-镜像分发覆盖节点：192.168.0.8（control-plane）、192.168.0.15、192.168.0.9。
+镜像应分发到所有可能运行控制器 Pod 的节点，包括 control-plane 与 worker 节点。

@@ -1,0 +1,129 @@
+{{- if .Values.scheduler.enable }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ template "dragonfly.scheduler.fullname" . }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels:
+    app: {{ template "dragonfly.fullname" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: {{ .Values.scheduler.name }}
+  annotations:
+  {{- if .Values.scheduler.statefulsetAnnotations }}
+{{ toYaml .Values.scheduler.statefulsetAnnotations | indent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.scheduler.updateStrategy }}
+  updateStrategy:
+{{ toYaml .Values.scheduler.updateStrategy | indent 4 }}
+  {{- end }}
+  replicas: {{ .Values.scheduler.replicas }}
+  selector:
+    matchLabels:
+      app: {{ template "dragonfly.fullname" . }}
+      release: {{ .Release.Name }}
+      component: {{ .Values.scheduler.name }}
+  serviceName: scheduler
+  template:
+    metadata:
+      labels:
+        app: {{ template "dragonfly.fullname" . }}
+        release: {{ .Release.Name }}
+        component: {{ .Values.scheduler.name }}
+        {{- if .Values.scheduler.podLabels }}
+{{ toYaml .Values.scheduler.podLabels | indent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/scheduler/scheduler-configmap.yaml") . | sha256sum }}
+      {{- if .Values.scheduler.podAnnotations }}
+{{ toYaml .Values.scheduler.podAnnotations | indent 8 }}
+      {{- end }}
+    spec:
+      hostNetwork: {{ .Values.scheduler.hostNetwork }}
+      {{- if .Values.scheduler.hostNetwork }}
+      dnsPolicy: "ClusterFirstWithHostNet"
+      {{- end }}
+      {{- with .Values.scheduler.nodeSelector | default .Values.global.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.scheduler.tolerations }}
+      tolerations:
+{{ toYaml .Values.scheduler.tolerations | indent 8 }}
+      {{- end }}
+      {{- if .Values.scheduler.affinity }}
+      affinity:
+{{ toYaml .Values.scheduler.affinity | indent 8 }}
+      {{- end }}
+      {{- if quote .Values.scheduler.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.scheduler.terminationGracePeriodSeconds }}
+      {{- end }}
+      {{- if .Values.scheduler.priorityClassName }}
+      priorityClassName: {{ .Values.scheduler.priorityClassName }}
+      {{- end }}
+      {{- with .Values.scheduler.image.pullSecrets | default .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.scheduler.hostAliases }}
+      hostAliases:
+{{ toYaml .Values.scheduler.hostAliases | indent 8 }}
+      {{- end }}
+      initContainers:
+      - name: wait-for-manager
+        image: {{ template "scheduler.initContainer.image" . }}
+        imagePullPolicy: {{ .Values.scheduler.initContainer.image.pullPolicy }}
+        {{- if .Values.manager.enable }}
+        command: ['sh', '-c', 'until nslookup {{ template "dragonfly.manager.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }} && nc -vz {{ template "dragonfly.manager.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }} {{ .Values.manager.restPort }}; do echo waiting for manager; sleep 2; done;']
+        {{- else }}
+        command: ['sh', '-c', 'until nslookup {{ .Values.externalManager.host }} && nc -vz {{ .Values.externalManager.host }} {{ .Values.externalManager.restPort }}; do echo waiting for external manager; sleep 2; done;']
+        {{- end }}
+        resources:
+{{ toYaml .Values.scheduler.initContainer.resources | indent 10 }}
+      containers:
+      - name: scheduler
+        image: {{ template "scheduler.image" . }}
+        imagePullPolicy: {{ .Values.scheduler.image.pullPolicy | quote }}
+        resources:
+{{ toYaml .Values.scheduler.resources | indent 10 }}
+        env:
+        {{- if .Values.scheduler.maxProcs }}
+        - name: GOMAXPROCS
+          value: {{ .Values.scheduler.maxProcs }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.scheduler.containerPort }}
+          protocol: TCP
+        {{- if .Values.scheduler.metrics.enable }}
+        - containerPort: 8000
+          protocol: TCP
+        {{- end }}
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/dragonfly"
+        {{- if .Values.scheduler.extraVolumeMounts }}
+        {{- toYaml .Values.scheduler.extraVolumeMounts | nindent 8 }}
+        {{- end }}
+        readinessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:{{ .Values.scheduler.containerPort }}"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:{{ .Values.scheduler.containerPort }}"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: {{ template "dragonfly.scheduler.fullname" . }}
+          items:
+          - key: scheduler.yaml
+            path: scheduler.yaml
+      {{- if .Values.scheduler.extraVolumes }}
+      {{- toYaml .Values.scheduler.extraVolumes | nindent 6 }}
+      {{- end }}
+{{- end }}

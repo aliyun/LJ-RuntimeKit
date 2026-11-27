@@ -48,6 +48,21 @@ func NewXdmGrpcClient(config *Config, info *HostInfo, exportType xdmgrpc.Exporte
 	}, nil
 }
 
+// GetAllHealth retrieves the full snapshot using the caller's context and deadline.
+func (c *XdmGrpcClient) GetAllHealth(ctx context.Context) (*xdmgrpc.GetAllHealthResponse, error) {
+	return c.client.GetAllHealth(ctx, &xdmgrpc.GetAllHealthRequest{})
+}
+
+// GetCategories retrieves the full category catalog using the caller's context and deadline.
+func (c *XdmGrpcClient) GetCategories(ctx context.Context) (*xdmgrpc.GetCategoriesResponse, error) {
+	return c.client.GetCategories(ctx, &xdmgrpc.GetCategoriesRequest{})
+}
+
+// Close releases the client's connection and its resources.
+func (c *XdmGrpcClient) Close() error {
+	return c.conn.Close()
+}
+
 func (c *XdmGrpcClient) GetConfig() (*MetricConfig, GrpcErrCode) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

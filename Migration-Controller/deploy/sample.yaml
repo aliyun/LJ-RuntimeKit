@@ -1,0 +1,47 @@
+# A minimal, directly applicable ContainerStateMigrationJobRequest sample.
+# Replace sourcePodName / sourcePodNamespace / sourcePodUID and the storage
+# backend fields to match your environment before applying.
+apiVersion: migration.io/v1beta1
+kind: ContainerStateMigrationJobRequest
+metadata:
+  name: sample-migration
+  namespace: default
+spec:
+  # Storage backend: local / nfs / oss / dragonfly / efc / pvc
+  storageType: nfs
+  storage:
+    nfs:
+      server: "nfs-server.example.com"
+      path: "/migration/data"
+      # options: extra mount parameters passed through (optional)
+      options:
+        proto: "tcp"
+  # checkpoint stage (optional, skipped when nil)
+  checkpoint:
+    sourcePodName: my-source-pod
+    sourcePodNamespace: default
+    sourcePodUID: "REPLACE-WITH-REAL-POD-UID"
+    # containers is required and currently allows exactly one container (the list type reserves room for future multi-container support)
+    containers:
+      - main
+    # timeoutInMinute, only when set, is passed through to cr-tool as --timeout <minutes> (0 included); unset passes no --timeout. A negative value is rejected and reported on status.message.
+    timeoutInMinute: 30
+    # enableCheckpointAutoMode defaults to true: cr-tool runs --enable-auto-mode to detect the steady-state point. Explicit false omits it and then timeoutInMinute must be set.
+    enableCheckpointAutoMode: true
+    # containerCheckpointPolicy configures fine-grained policy keyed by container name (optional)
+    containerCheckpointPolicy:
+      main:
+        excludeFilepath:
+          - /tmp
+          - /var/run
+  # restore stage (optional, skipped when nil)
+    # checkpointUID is required when checkpoint is nil (restore-only)
+    # checkpointUID is required when checkpoint is nil (restore-only)
+    # checkpointUID is required when checkpoint is nil (restore-only)
+    # containerRestorePolicy is reserved for future extensions and currently has no effect
+    # containerRestorePolicy is reserved for future extensions and currently has no effect
+    # containerRestorePolicy is reserved for future extensions and currently has no effect
+    # containerRestorePolicy:
+    #   main:
+    #     advanceOptions:
+    #       some-future-key: "some-value"

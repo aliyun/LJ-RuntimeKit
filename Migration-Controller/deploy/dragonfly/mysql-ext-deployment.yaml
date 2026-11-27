@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dragonfly-mysql-ext
+  namespace: dragonfly
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dragonfly-mysql-ext
+  template:
+    metadata:
+      labels:
+        app: dragonfly-mysql-ext
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: dragonfly123
+        - name: MYSQL_DATABASE
+          value: dragonfly
+        - name: MYSQL_USER
+          value: dragonfly
+        - name: MYSQL_PASSWORD
+          value: dragonfly123
+        resources:
+          limits:
+            cpu: "1"
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi

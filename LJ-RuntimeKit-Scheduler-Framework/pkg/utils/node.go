@@ -41,6 +41,16 @@ func GetLabelsFromNodeStr(node *v1.Node, labelKey string) (string, error) {
 	return val, nil
 }
 
+// NodeSupportsMig returns true if the node carries the MIG label rt_mig_enable=true.
+// MIG pods may only be scheduled onto nodes that carry this label.
+func NodeSupportsMig(node *v1.Node) bool {
+	if node == nil {
+		return false
+	}
+	val, err := GetLabelsFromNodeStr(node, LabelsMigTask)
+	return err == nil && val == MigLabelValue
+}
+
 // GetLabelsFromNodeInt returns the integer value of a node label.
 func GetLabelsFromNodeInt(node *v1.Node, labelKey string) (int, error) {
 	val, ok := node.Labels[labelKey]

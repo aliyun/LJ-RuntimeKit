@@ -1,0 +1,13 @@
+.git
+.idea
+.qoder
+.agents
+.DS_Store
+build
+dist
+bin
+artifacts
+coverage.out
+coverage.html
+cmd/exporter/exporter
+cmd/collector/profiling-collector

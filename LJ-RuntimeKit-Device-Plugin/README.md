@@ -1,3 +1,5 @@
+**English** | [简体中文](README_zh.md)
+
 # LJ RuntimeKit Device Plugin
 
 Welcome to the LJ RuntimeKit Device Plugin! This is an open-source device plugin
@@ -33,8 +35,8 @@ Implements health checks to monitor and report the status of hardware devices.
 
 ## Prerequisites
 Before you start using the LJ RuntimeKit Device Plugin, make sure that you have:
-- A Kubernetes cluster running version 1.18 or higher.
-- Go 1.17 or later installed on your system if you intend to build from source.
+- A Kubernetes cluster running version 1.37 or higher.
+- Go 1.26 or later installed on your system if you intend to build from source.
 
 ## Quick Start
 Follow these steps to quickly deploy the LJ RuntimeKit Device Plugin to your cluster:

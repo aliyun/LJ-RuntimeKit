@@ -16,6 +16,12 @@ limitations under the License.
 
 package standard
 
+import (
+	"sort"
+
+	"github.com/lj-runtimekit/scheduler/pkg/utils"
+)
+
 // gpuResources holds the memory and compute resources of a GPU device.
 type gpuResources struct {
 	memory  int64
@@ -23,6 +29,7 @@ type gpuResources struct {
 }
 
 // staffGPU represents a GPU device candidate for scheduling with its available and total resources.
+// For time-sharing tasks "compute" is gpu-core, while for MPS tasks it is gpu-slice.
 type staffGPU struct {
 	devId     int
 	available *gpuResources
@@ -42,18 +49,15 @@ func (s staffGPU) getResourceRatio() int64 {
 	return 0
 }
 
-// resourceList sorts staff GPU candidates by ascending resource ratio (for binpack).
-type resourceList []staffGPU
-
-func (l resourceList) Len() int           { return len(l) }
-func (l resourceList) Swap(i, j int)      { l[i], l[j] = l[j], l[i] }
-func (l resourceList) Less(i, j int) bool { return l[i].getResourceRatio() < l[j].getResourceRatio() }
-
-// reverseResourceList sorts staff GPU candidates by descending resource ratio (for spread).
-type reverseResourceList []staffGPU
-
-func (l reverseResourceList) Len() int      { return len(l) }
-func (l reverseResourceList) Swap(i, j int) { l[i], l[j] = l[j], l[i] }
-func (l reverseResourceList) Less(i, j int) bool {
-	return l[i].getResourceRatio() > l[j].getResourceRatio()
+// sortStaffGPUs orders GPU candidates for the given strategy. BINPACK picks the
+// least free devices and SPREAD the most free ones. The same rule applies to every
+// candidate, including the devices that can already run MPS tasks.
+func sortStaffGPUs(list []staffGPU, strategy string) {
+	binpack := strategy == utils.ScheduleStrategyBinpack
+	sort.SliceStable(list, func(i, j int) bool {
+		if binpack {
+			return list[i].getResourceRatio() < list[j].getResourceRatio()
+		}
+		return list[i].getResourceRatio() > list[j].getResourceRatio()
+	})
 }

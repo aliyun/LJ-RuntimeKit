@@ -22,3 +22,11 @@ type PluginInterface interface {
 	Stop() error
 	Unhealthy(dev *DeviceBase)
 }
+
+// HealthSetter is implemented by plugins whose whole device list can be
+// flipped between healthy and unhealthy. The topology sync uses it to stop
+// advertising the rdma resource after xdm withdrew the topology and to offer
+// it again once the topology is published.
+type HealthSetter interface {
+	SetHealth(healthy bool)
+}

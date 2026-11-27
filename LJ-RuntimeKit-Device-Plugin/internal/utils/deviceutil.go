@@ -18,6 +18,7 @@ package utils
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -69,8 +70,8 @@ func ExtractMigRealDeviceID(fakeDeviceID string) string {
 
 // fakeIDPrefixes are the prefixes of the fake device ids reported to kubelet
 // in ListAndWatch, see GenerateFakeCoreID / GenerateFakeMemoryID /
-// GenerateFakeMigID / GenerateFakePossibilityID.
-var fakeIDPrefixes = []string{"COMP-", "MEM-", "MIG-", "POSSI-"}
+// GenerateFakeMigID / GenerateFakeMpsID / GenerateFakePossibilityID.
+var fakeIDPrefixes = []string{"COMP-", "MEM-", "MIG-", "MPS-", "POSSI-"}
 
 // extractRealDeviceID recovers the xdm device id embedded in a kubelet
 // assigned device id. Raw ids are returned unchanged.
@@ -151,6 +152,64 @@ func GenerateFakeMigID(realID string, ciNum, fakeCounter uint) string {
 	return fmt.Sprintf("%s-%s-_-%d_%d", "MIG", realID, ciNum, fakeCounter)
 }
 
+// GenerateFakeMpsID builds the fake device id of one MPS slice of a card. The
+// MPS- prefix keeps it distinguishable from MIG ids in logs and checkpoints.
+func GenerateFakeMpsID(realID string, fakeCounter uint) string {
+	return fmt.Sprintf("%s-%s-_-%d", "MPS", realID, fakeCounter)
+}
+
+// SliceFakeDeviceIDs returns the fake slice device ids one card reports to
+// kubelet. gpu-slice is a dual-mode resource: MpsSlice is checked first
+// because xdm writes it only for cards that create no MIG instance, so its
+// presence alone means the card advertises MPS compute slices; the MIG ids are
+// the fallback for cards that really instantiate MIG.
+func SliceFakeDeviceIDs(dev *xpugrpc.Device) ([]string, error) {
+	if dev == nil {
+		return nil, nil
+	}
+	mpsSlices, err := sliceCount(dev, MpsSliceKey)
+	if err != nil {
+		return nil, err
+	}
+	if mpsSlices > 0 {
+		ids := make([]string, 0, mpsSlices)
+		for i := 0; i < mpsSlices; i++ {
+			ids = append(ids, GenerateFakeMpsID(dev.Id, uint(i)))
+		}
+		return ids, nil
+	}
+
+	if migEnable, ok := dev.ExtenderResources[MigEnableKey]; ok && migEnable == MigEnableValue {
+		migSlices, err := sliceCount(dev, MigSliceKey)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, migSlices)
+		for i := 0; i < migSlices; i++ {
+			ids = append(ids, GenerateFakeMigID(dev.Id, uint(migSlices), uint(i)))
+		}
+		return ids, nil
+	}
+	return nil, nil
+}
+
+// sliceCount parses the slice count carried in the given extender key; a
+// missing or non-positive count means the card reports no slice device.
+func sliceCount(dev *xpugrpc.Device, key string) (int, error) {
+	raw, ok := dev.ExtenderResources[key]
+	if !ok || raw == "" {
+		return 0, nil
+	}
+	count, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("card %s has invalid %s value %q: %w", dev.Id, key, raw, err)
+	}
+	if count <= 0 {
+		return 0, nil
+	}
+	return count, nil
+}
+
 func GenerateFakePossibilityID(realID string, fakeCounter uint) string {
 	return fmt.Sprintf("%s-%s-_-%d", "POSSI", realID, fakeCounter)
 }
@@ -204,4 +263,13 @@ func (d *DeviceMeta) Delete(id int) {
 	defer d.Unlock()
 	delete(d.Cache, id)
 	return
+}
+
+// Replace swaps the whole cache with one xdm snapshot. Devices missing from the
+// snapshot are dropped, so a shrunk device list never leaves stale minors
+// behind, which matters now that the ListAndWatch stream is long lived.
+func (d *DeviceMeta) Replace(devices map[int]*xpugrpc.Device) {
+	d.Lock()
+	defer d.Unlock()
+	d.Cache = devices
 }

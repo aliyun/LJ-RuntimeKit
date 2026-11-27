@@ -1,3 +1,5 @@
+**简体中文** | [English](README_EN.md)
+
 # LJ-RuntimeKit-Controller
 
 LJ-RuntimeKit-Controller 是一个基于 Kubernetes 的控制器，用于监控节点标签变化，并通过 Unix Socket 自动配置节点上的功能开关。
@@ -83,10 +85,10 @@ LJ-RuntimeKit-Controller/
 
 ### 前提条件
 
-- Go 1.25+
+- Go 1.22.7+
 - Docker
 - kubectl（已配置集群访问）
-- Kubernetes 集群 1.20+
+- Kubernetes 集群 1.31+（依赖 `k8s.io/* v0.31.4`）
 
 ### 构建
 
@@ -209,7 +211,7 @@ kubectl label node <node-name> lj_runtimekit_enable-
 | `--health-probe-bind-address` | `:8081` | 健康检查监听地址 |
 | `--leader-elect` | `false` | 启用 Leader 选举 |
 | `--job-namespace` | `lj-runtimekit-system` | Job 创建的命名空间 |
-| `--job-image` | `lj-runtimekit-controller-job-agent:latest` | Job Agent 镜像 |
+| `--job-image` | `lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:v1.14.0-k8s1.34` | Job Agent 镜像 |
 
 ### Job Agent 参数
 

@@ -28,12 +28,15 @@ data:
             - name: Standard
             - name: Mig
             - name: Gang
+            - name: ActiveMonitoring
           score:
             enabled:
             - name: Standard
               weight: 100
             - name: Gang
               weight: 100
+            - name: ActiveMonitoring
+              weight: 20
           reserve:
             enabled:
             - name: Standard

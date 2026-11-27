@@ -108,12 +108,36 @@ func (n *NormalStandardPlugin) PreFilter(ctx context.Context, state *framework.C
 
 	klog.V(4).Infof("pod %s/%s req vmem %d, vcore %d, vslice %d, normalGpu %d replicas %d", pod.Namespace, pod.Name, vmemory, vcore, vslice, normalGpuReqCnt, vReplicas)
 
+	taskType := utils.GetPodGpuTaskType(pod)
+	taskMode := utils.GetPodTaskMode(pod)
+	klog.V(4).Infof("PreFilter: pod %s/%s detected gpu task type %q (priority whole-card > mig > time-sharing > mps), taskMode=%v",
+		pod.Namespace, pod.Name, taskType, taskMode)
+
+	// MPS tasks share a single GPU and never span multiple cards, so a replicas label
+	// greater than 1 is downgraded to one card instead of failing the request.
+	// MPS tasks are scheduled by gpu-slice only: a pod requesting 0 < gpu-core < 100 is
+	// classified as a time-sharing task even if it also asks for slices.
+	if taskMode == utils.TaskModeMPS {
+		if vReplicas > 1 {
+			klog.Warningf("MPS pod %s/%s requests replicas %d, downgraded to 1 because MPS only supports a single card",
+				pod.Namespace, pod.Name, vReplicas)
+			vReplicas = 1
+		}
+		// MPS clients talk to the host MPS daemon via shared memory, which requires
+		// the host IPC namespace. Scheduling is not blocked, only a warning is logged.
+		if !pod.Spec.HostIPC {
+			klog.Warningf("MPS pod %s/%s does not set hostIPC=true, MPS clients may fail to connect to the MPS daemon",
+				pod.Namespace, pod.Name)
+		}
+	}
+
 	state.Write(ampcache.VStandardTaskReqStateKey, ampcache.StandardTaskReq{
 		Vmem:            vmemory,
 		Vcore:           vcore,
 		Vslice:          vslice,
 		VReplicas:       vReplicas,
 		NormalGpuReqCnt: normalGpuReqCnt,
+		TaskMode:        taskMode,
 	})
 
 	clusterNodeMigDevices := make(ampcache.ClusterNodeMigDevices)
@@ -151,6 +175,10 @@ func (n *NormalStandardPlugin) PreFilterExtensions() framework.PreFilterExtensio
 }
 
 func (n *NormalStandardPlugin) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	// ActiveMonitoring detection Pods are pinned by the dedicated ActiveMonitoring plugin.
+	if utils.IsActiveMonitoringPod(pod) {
+		return framework.NewStatus(framework.Success, "skip activemonitoring pod, handled by ActiveMonitoring plugin")
+	}
 	node := nodeInfo.Node()
 	if node == nil {
 		return framework.NewStatus(framework.Error, "node not found")
@@ -184,8 +212,20 @@ func (n *NormalStandardPlugin) Filter(ctx context.Context, state *framework.Cycl
 
 	klog.V(5).Infof("check if pod %s/%s can be scheduled in node %s", pod.Namespace, pod.Name, node.Name)
 
+	// A node labeled rt_mig_enable=true is reserved for MIG tasks only, so
+	// whole-card, time-sharing and MPS pods must not land on it. MIG pods are
+	// scheduled through the Mig plugin.
+	if utils.NodeSupportsMig(node) && utils.GetPodGpuTaskType(pod) != utils.PodGpuTaskMig {
+		klog.V(2).Infof("pod %s/%s can not be scheduled in node %s because the node is reserved for mig tasks",
+			pod.Namespace, pod.Name, node.Name)
+		return framework.NewStatus(framework.Unschedulable,
+			fmt.Sprintf("node %s is reserved for mig tasks (%s=%s)", node.Name, utils.LabelsMigTask, utils.MigLabelValue))
+	}
+
 	found := false
 	switch {
+	// Priority 1: whole-card tasks. A gpu/nvidia/gpu-count request or gpu-core >= 100
+	// wins over any slice based classification.
 	case standardReq.NormalGpuReqCnt > 0:
 		gpus := 0
 		for idx, dev := range availableDevices {
@@ -201,14 +241,20 @@ func (n *NormalStandardPlugin) Filter(ctx context.Context, state *framework.Cycl
 	default:
 
 		vslice := standardReq.Vslice
-		if vslice > 0 {
+		// Priority 2: MIG tasks (gpu-slice request plus the mig label, with optional
+		// gpu-memory) are handed over to the Mig plugin. The remaining GPU tasks are
+		// handled here:
+		//   - priority 3 time-sharing: 0 < gpu-core < 100, even when gpu-slice is also
+		//     requested, or a gpu-memory only request;
+		//   - priority 4 MPS: gpu-slice without the mig label, with optional gpu-memory.
+		if utils.IsMigPodTask(pod) {
 			klog.V(5).Infof("pod %s/%s is requesting Mig resources, which will enter the Mig filter process", pod.Namespace, pod.Name)
-			return framework.NewStatus(framework.Success, "standard reserve process pod %s is a mig pod", pod.Name)
+			return framework.NewStatus(framework.Success, "standard filter process pod %s is a mig pod", pod.Name)
 		}
 
-		if standardReq.Vcore == 0 && standardReq.Vmem == 0 {
+		if standardReq.Vcore == 0 && standardReq.Vmem == 0 && vslice == 0 {
 			klog.V(5).Infof("pod %s/%s req core %d memory %d slice %d normalGpuReqCnt %d all is 0", pod.Namespace, pod.Name, standardReq.Vcore, standardReq.Vmem, standardReq.Vslice, standardReq.NormalGpuReqCnt)
-			return framework.NewStatus(framework.Success, "standard reserve process pod %s/%s is cpu pod", pod.Namespace, pod.Name)
+			return framework.NewStatus(framework.Success, "standard filter process pod %s/%s is cpu pod", pod.Namespace, pod.Name)
 		}
 
 		devsReplicas := 0
@@ -217,15 +263,16 @@ func (n *NormalStandardPlugin) Filter(ctx context.Context, state *framework.Cycl
 				continue
 			}
 
-			idleVMemory, idleVCore := dev.GetIdleResource()
-			totalMem, totalCore := dev.GetTotalResource()
-			realTotalMem, realTotalCore := int(totalMem), int(totalCore)
-			if idleVMemory >= int64(standardReq.Vmem) &&
-				idleVCore >= int64(standardReq.Vcore) &&
-				realTotalMem >= standardReq.Vmem &&
-				realTotalCore >= standardReq.Vcore {
-				devsReplicas++
+			// MPS and time-sharing tasks cannot share the same GPU, and a device must
+			// own enough idle slices (MPS) or idle core/memory (time-sharing).
+			if !dev.CanRunTask(standardReq.TaskMode, int64(standardReq.Vmem), int64(standardReq.Vcore), int64(vslice)) {
+				idleMem, idleCore := dev.GetIdleResource()
+				klog.V(5).Infof("Filter: pod %s/%s skips device %d in node %s (device mode=%v, requested mode=%v, idle slice=%d, idle mem=%d, idle core=%d)",
+					pod.Namespace, pod.Name, idx, node.Name, dev.GetTaskMode(), standardReq.TaskMode,
+					dev.GetIdleSlice(), idleMem, idleCore)
+				continue
 			}
+			devsReplicas++
 		}
 		found = devsReplicas >= standardReq.VReplicas
 	}
@@ -239,12 +286,22 @@ func (n *NormalStandardPlugin) Filter(ctx context.Context, state *framework.Cycl
 }
 
 func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) *framework.Status {
+	// ActiveMonitoring detection Pods request no GPU resource and are pinned by the
+	// controller's rt-diag-target-minor annotation, so Standard has nothing to assign or patch.
+	if utils.IsActiveMonitoringPod(p) {
+		return framework.NewStatus(framework.Success, "skip activemonitoring pod, handled by ActiveMonitoring plugin")
+	}
 	nodeInfo, err := n.fh.SnapshotSharedLister().NodeInfos().Get(nodeName)
 	if err != nil {
 		return framework.AsStatus(err)
 	}
 	if nodeInfo.Node() == nil {
 		return framework.NewStatus(framework.Error, "node not found")
+	}
+	// Defensive check: Filter already rejects non-MIG pods on nodes reserved for MIG.
+	if utils.NodeSupportsMig(nodeInfo.Node()) && utils.GetPodGpuTaskType(p) != utils.PodGpuTaskMig {
+		return framework.NewStatus(framework.Error,
+			fmt.Sprintf("node %s is reserved for mig tasks (%s=%s)", nodeName, utils.LabelsMigTask, utils.MigLabelValue))
 	}
 	clusterDevices, migClusterDevices, standardReq, err := ampcache.GetPreFilterStateData(state)
 	if err != nil {
@@ -292,6 +349,7 @@ func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.Cyc
 	normalGpuTask := false
 	var pcieSwitchIndexStr string
 	switch {
+	// Priority 1: whole-card tasks come first, see Filter.
 	case normalGpuReqCnt > 0:
 		normalGpuTask = true
 		// Skip RDMA logic when the node lacks RDMA topology or the pod does not request it.
@@ -333,6 +391,8 @@ func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.Cyc
 				}
 			}
 		}
+		// Card-level preference
+		candidateDeviceIdList = preferNonTestCards(candidateDeviceIdList, availableDevices)
 		// Fallback: collect RDMA switches for the GPUs that will actually be assigned.
 		if podRequestsRDMA && rdmaTopo != nil && pcieSwitchIndexStr == "" && len(candidateDeviceIdList) >= normalGpuReqCnt {
 			assignedGpus := candidateDeviceIdList[:normalGpuReqCnt]
@@ -343,20 +403,22 @@ func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.Cyc
 			}
 		}
 	default:
-		if standardReq.Vslice > 0 {
+		// Priority 2: MIG tasks are handed over to the Mig plugin, see Filter.
+		if utils.IsMigPodTask(p) {
 			klog.V(5).Infof("pod %s/%s is requesting Mig resources, which will enter the Mig Reserve process", p.Namespace, p.Name)
 			return framework.NewStatus(framework.Success, "standard reserve process pod %s is a mig pod", p.Name)
 		}
 
-		if vmemory == 0 && vcore == 0 {
+		if vmemory == 0 && vcore == 0 && standardReq.Vslice == 0 {
 			klog.V(5).Infof("pod %s/%s req core %d memory %d slice %d normalGpuReqCnt %d all is 0", p.Namespace, p.Name, vcore, vmemory, standardReq.Vslice, normalGpuReqCnt)
 			return framework.NewStatus(framework.Success, "standard reserve process pod %s/%s is cpu pod", p.Namespace, p.Name)
 		}
 
+		// MPS tasks occupy a single card and are never spread across topology groups.
 		// For 2/4/8 virtual card requests, prefer devices in the same topology group.
 		// When multiple groups exist, pick the best according to defaultStrategy.
-		if vReplicas == 2 || vReplicas == 4 || vReplicas == 8 {
-			if topoSelected, ok := tryVirtualTopoReserve(availableDevices, migDevices, vReplicas, int64(vmemory), int64(vcore), defaultStrategy); ok {
+		if standardReq.TaskMode != utils.TaskModeMPS && (vReplicas == 2 || vReplicas == 4 || vReplicas == 8) {
+			if topoSelected, ok := tryVirtualTopoReserve(availableDevices, migDevices, vReplicas, int64(vmemory), int64(vcore), defaultStrategy, standardReq.TaskMode); ok {
 				candidateDeviceIdList = topoSelected
 				found = true
 				klog.V(4).Infof("pod %s/%s (virtual card) topo reserve selected devices %v", p.Namespace, p.Name, candidateDeviceIdList)
@@ -369,29 +431,33 @@ func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.Cyc
 				if migDevices.Has(idx) {
 					continue
 				}
+				// MPS and time-sharing tasks cannot share the same GPU.
+				if !dev.CanRunTask(standardReq.TaskMode, int64(vmemory), int64(vcore), int64(standardReq.Vslice)) {
+					klog.V(5).Infof("Reserve: pod %s/%s skips device %d in node %s due to task mode mismatch or insufficient resources (device=%v, requested=%v)",
+						p.Namespace, p.Name, idx, nodeName, dev.GetTaskMode(), standardReq.TaskMode)
+					continue
+				}
 				totalVMemory, totalVCore := dev.GetTotalResource()
 				idleVMemory, idleVCore := dev.GetIdleResource()
-				if idleVMemory < int64(vmemory) || idleVCore < int64(vcore) {
-					continue
+				// MPS candidates are ranked by slices, time-sharing candidates by gpu-core.
+				idleCompute, totalCompute := idleVCore, totalVCore
+				if standardReq.TaskMode == utils.TaskModeMPS {
+					idleCompute, totalCompute = dev.GetIdleSlice(), dev.GetTotalSlice()
 				}
 				staff := staffGPU{
 					devId: idx,
 					available: &gpuResources{
 						memory:  idleVMemory,
-						compute: idleVCore,
+						compute: idleCompute,
 					},
 					total: &gpuResources{
 						memory:  totalVMemory,
-						compute: totalVCore,
+						compute: totalCompute,
 					},
 				}
 				staffGpuList = append(staffGpuList, staff)
 			}
-			if defaultStrategy == utils.ScheduleStrategyBinpack {
-				sort.Sort(resourceList(staffGpuList))
-			} else {
-				sort.Sort(reverseResourceList(staffGpuList))
-			}
+			sortStaffGPUs(staffGpuList, defaultStrategy)
 			for _, st := range staffGpuList {
 				candidateDeviceIdList = append(candidateDeviceIdList, st.devId)
 			}
@@ -415,7 +481,16 @@ func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.Cyc
 	}
 	flags := make([]assignedFlag, 0)
 	if !normalGpuTask {
-		if vcore != 0 {
+		// Only the resources actually assigned by the scheduler are annotated and
+		// flagged: a time-sharing task is sized by gpu-core, while an MPS task is
+		// sized by gpu-slice. GPU memory is allocated for both when requested, but a
+		// slice requested by a time-sharing task is never assigned here.
+		if standardReq.TaskMode == utils.TaskModeMPS {
+			if standardReq.Vslice > 0 {
+				patchMap[utils.AnnoCoreResourceByPod] = fmt.Sprintf("%d", standardReq.Vslice)
+				flags = append(flags, sliceAssigned)
+			}
+		} else if vcore != 0 {
 			patchMap[utils.AnnoCoreResourceByPod] = fmt.Sprintf("%d", vcore)
 			flags = append(flags, vcoreAssigned)
 		}
@@ -428,7 +503,8 @@ func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.Cyc
 		flags = append(flags, normalAssigned)
 		candidateDeviceIdList = candidateDeviceIdList[:normalGpuReqCnt]
 	}
-	klog.V(5).Infof("found the candidate ids list %v patchMap %v flagList %v for pod %s/%s", candidateDeviceIdList, patchMap, flags, p.Namespace, p.Name)
+	klog.V(4).Infof("Reserve: pod %s/%s taskMode=%v selected devices %v strategy=%s pcieSwitch=%s",
+		p.Namespace, p.Name, standardReq.TaskMode, candidateDeviceIdList, defaultStrategy, pcieSwitchIndexStr)
 
 	patchedAnnotationBytes, err := patchPodAssigned(candidateDeviceIdList, patchMap, flags...)
 	if err != nil {
@@ -448,6 +524,21 @@ func (n *NormalStandardPlugin) Reserve(ctx context.Context, state *framework.Cyc
 	p.Annotations = newPod.Annotations
 	klog.V(5).Infof("pod %s/%s patch annotations %v", p.Namespace, p.Name, p.Annotations)
 	return framework.NewStatus(framework.Success, "")
+}
+
+// preferNonTestCards stably partitions candidate device ids so cards WITHOUT a pinned
+// ActiveMonitoring detection Pod come first.
+func preferNonTestCards(ids []int, availableDevices map[int]*ampcache.DeviceInfo) []int {
+	noTest := make([]int, 0, len(ids))
+	withTest := make([]int, 0)
+	for _, idx := range ids {
+		if dev, ok := availableDevices[idx]; ok && dev.HasTestPod() {
+			withTest = append(withTest, idx)
+		} else {
+			noTest = append(noTest, idx)
+		}
+	}
+	return append(noTest, withTest...)
 }
 
 // filterTopologyGroups finds all topology groups where all devices are non-MIG and idle.
@@ -511,8 +602,8 @@ func findIdleTopologyGroups(availableDevices map[int]*ampcache.DeviceInfo, migDe
 }
 
 // findResourceTopologyGroups finds topology groups where all devices have enough idle resources
-// to satisfy the virtual card resource request.
-func findResourceTopologyGroups(availableDevices map[int]*ampcache.DeviceInfo, migDevices *ampcache.GpuDevice, numCards int, reqVmem, reqVcore int64) [][]int {
+// to satisfy the virtual card resource request. Non-empty taskMode filters out incompatible devices.
+func findResourceTopologyGroups(availableDevices map[int]*ampcache.DeviceInfo, migDevices *ampcache.GpuDevice, numCards int, reqVmem, reqVcore int64, taskMode utils.TaskMode) [][]int {
 	groupSet := make(map[string][]int)
 
 	for _, dev := range availableDevices {
@@ -542,7 +633,7 @@ func findResourceTopologyGroups(availableDevices map[int]*ampcache.DeviceInfo, m
 				continue
 			}
 
-			// Verify that devices are non-MIG and have sufficient resources.
+			// Verify that devices are non-MIG, compatible, and have sufficient resources.
 			allValid := true
 			for _, m := range minors {
 				if migDevices.Has(m) {
@@ -551,6 +642,10 @@ func findResourceTopologyGroups(availableDevices map[int]*ampcache.DeviceInfo, m
 				}
 				d, ok := availableDevices[m]
 				if !ok {
+					allValid = false
+					break
+				}
+				if !d.CompatibleWith(taskMode) {
 					allValid = false
 					break
 				}
@@ -575,9 +670,10 @@ func findResourceTopologyGroups(availableDevices map[int]*ampcache.DeviceInfo, m
 }
 
 // tryVirtualTopoReserve attempts to reserve a topology group for a virtual card request.
+// Tasks with a non-unknown taskMode skip groups containing incompatible task types.
 // BINPACK: selects the group with the lowest resource usage. SPREAD: selects the highest.
-func tryVirtualTopoReserve(availableDevices map[int]*ampcache.DeviceInfo, migDevices *ampcache.GpuDevice, numCards int, reqVmem, reqVcore int64, defaultStrategy string) ([]int, bool) {
-	groups := findResourceTopologyGroups(availableDevices, migDevices, numCards, reqVmem, reqVcore)
+func tryVirtualTopoReserve(availableDevices map[int]*ampcache.DeviceInfo, migDevices *ampcache.GpuDevice, numCards int, reqVmem, reqVcore int64, defaultStrategy string, taskMode utils.TaskMode) ([]int, bool) {
+	groups := findResourceTopologyGroups(availableDevices, migDevices, numCards, reqVmem, reqVcore, taskMode)
 	if len(groups) == 0 {
 		return nil, false
 	}
@@ -590,25 +686,40 @@ func tryVirtualTopoReserve(availableDevices map[int]*ampcache.DeviceInfo, migDev
 	scoredGroups := make([]scored, 0, len(groups))
 	for _, group := range groups {
 		var totalScore int64
+		valid := true
 		for _, minor := range group {
-			if dev, ok := availableDevices[minor]; ok {
-				idleMem, idleCore := dev.GetIdleResource()
-				totalMem, totalCore := dev.GetTotalResource()
-				st := staffGPU{
-					devId: minor,
-					available: &gpuResources{
-						memory:  idleMem,
-						compute: idleCore,
-					},
-					total: &gpuResources{
-						memory:  totalMem,
-						compute: totalCore,
-					},
-				}
-				totalScore += st.getResourceRatio()
+			dev, ok := availableDevices[minor]
+			if !ok {
+				valid = false
+				break
 			}
+			if !dev.CompatibleWith(taskMode) {
+				valid = false
+				break
+			}
+			idleMem, idleCore := dev.GetIdleResource()
+			totalMem, totalCore := dev.GetTotalResource()
+			st := staffGPU{
+				devId: minor,
+				available: &gpuResources{
+					memory:  idleMem,
+					compute: idleCore,
+				},
+				total: &gpuResources{
+					memory:  totalMem,
+					compute: totalCore,
+				},
+			}
+			totalScore += st.getResourceRatio()
+		}
+		if !valid {
+			continue
 		}
 		scoredGroups = append(scoredGroups, scored{minors: group, score: totalScore})
+	}
+
+	if len(scoredGroups) == 0 {
+		return nil, false
 	}
 
 	if defaultStrategy == utils.ScheduleStrategyBinpack {
@@ -621,6 +732,8 @@ func tryVirtualTopoReserve(availableDevices map[int]*ampcache.DeviceInfo, migDev
 		})
 	}
 
+	klog.V(4).Infof("tryVirtualTopoReserve: taskMode=%v selected group %v score=%d strategy=%s",
+		taskMode, scoredGroups[0].minors, scoredGroups[0].score, defaultStrategy)
 	return scoredGroups[0].minors, true
 }
 
@@ -649,6 +762,10 @@ func (n *NormalStandardPlugin) PostBind(ctx context.Context, state *framework.Cy
 // For 2/4/8 whole-card or virtual-card requests, returns MaxNodeScore if the node
 // has eligible topology groups; otherwise returns 0.
 func (n *NormalStandardPlugin) Score(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) (int64, *framework.Status) {
+	// Detection Pods are scored by the ActiveMonitoring plugin (preference layer); skip here.
+	if utils.IsActiveMonitoringPod(p) {
+		return 0, framework.NewStatus(framework.Success, "skip activemonitoring pod, handled by ActiveMonitoring plugin")
+	}
 	clusterDevices, clusterMigDevices, standardReq, err := ampcache.GetPreFilterStateData(state)
 	if err != nil {
 		klog.Errorf("Score stage pod %s/%s getPreFilterStateData failed due to %v", p.Namespace, p.Name, err)
@@ -667,6 +784,10 @@ func (n *NormalStandardPlugin) Score(ctx context.Context, state *framework.Cycle
 			Devices: make(map[int]*ampcache.Device),
 		}
 	}
+
+	// The node mig label is intentionally not checked here: Filter already rejects
+	// every non-MIG task on a node reserved for MIG tasks, and the framework only
+	// scores the nodes that passed Filter.
 
 	// Whole-card request: prefer nodes with idle topology groups.
 	if standardReq.NormalGpuReqCnt > 0 {
@@ -701,9 +822,33 @@ func (n *NormalStandardPlugin) Score(ctx context.Context, state *framework.Cycle
 		return 0, nil
 	}
 
+	// MPS tasks share a single GPU and are packed onto devices that already run MPS
+	// tasks, so time-sharing cards stay untouched and MPS cards are filled up first.
+	// A node only scores max when it owns an MPS card that can really host this pod,
+	// i.e. the card has enough idle slices and memory for the request.
+	if standardReq.TaskMode == utils.TaskModeMPS {
+		for _, dev := range availableDevices {
+			// Only cards that already run MPS are scored. A fully idle card (Unknown
+			// task mode) passes CanRunTask as well, but accepting it would give every
+			// feasible node the max score and leave this stage without any preference.
+			if dev.GetTaskMode() != utils.TaskModeMPS {
+				continue
+			}
+			if !dev.CanRunTask(utils.TaskModeMPS, int64(standardReq.Vmem), 0, int64(standardReq.Vslice)) {
+				continue
+			}
+			klog.V(4).Infof("Score stage pod %s/%s score: node %s has MPS tasks and enough idle slices/memory, returning MaxNodeScore",
+				p.Namespace, p.Name, nodeName)
+			return framework.MaxNodeScore, nil
+		}
+		klog.V(4).Infof("Score stage pod %s/%s score: node %s has no MPS card able to host the pod, returning 0",
+			p.Namespace, p.Name, nodeName)
+		return 0, nil
+	}
+
 	// Check for virtual-card 2/4/8 GPU requests: verify topology groups with sufficient resources.
 	if standardReq.VReplicas == 2 || standardReq.VReplicas == 4 || standardReq.VReplicas == 8 {
-		topoGroups := findResourceTopologyGroups(availableDevices, migDevices, standardReq.VReplicas, int64(standardReq.Vmem), int64(standardReq.Vcore))
+		topoGroups := findResourceTopologyGroups(availableDevices, migDevices, standardReq.VReplicas, int64(standardReq.Vmem), int64(standardReq.Vcore), standardReq.TaskMode)
 		if len(topoGroups) > 0 {
 			klog.V(4).Infof("Score stage pod %s/%s score: node %s has %d resource topo groups for %d virtual GPUs, returning MaxNodeScore",
 				p.Namespace, p.Name, nodeName, len(topoGroups), standardReq.VReplicas)

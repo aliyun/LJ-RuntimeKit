@@ -1,11 +1,26 @@
 #!/bin/bash
+#
+# Copyright (c) 2024-2026 Alibaba Cloud.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # Deploy script for AMP-Controller
 set -e
 
 # Default values
 NAMESPACE=${NAMESPACE:-"lj-runtimekit-system"}
-CONTROLLER_IMG=${CONTROLLER_IMG:-"lj-runtimekit-controller:latest"}
-JOB_AGENT_IMG=${JOB_AGENT_IMG:-"lj-runtimekit-controller-job-agent:latest"}
+CONTROLLER_IMG=${CONTROLLER_IMG:-"lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller:v1.14.0-k8s1.34"}
+JOB_AGENT_IMG=${JOB_AGENT_IMG:-"lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:v1.14.0-k8s1.34"}
 
 # Color output
 RED='\033[0;31m'

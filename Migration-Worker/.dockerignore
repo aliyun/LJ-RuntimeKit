@@ -1,0 +1,26 @@
+# VCS / IDE
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+
+# Build artifacts (image is produced by multi-stage build, host bin/ is irrelevant)
+bin/
+output/
+dist/
+*.tar
+*.tar.gz
+cover.out
+coverage.txt
+
+# Local-only files
+*.local
+Dockerfile.local
+
+# Docs / scripts not needed inside the build context
+**/*.md
+LICENSE
+NOTICE
+build.sh
+build_image_tar.sh

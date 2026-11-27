@@ -1,3 +1,5 @@
+[简体中文](README.md) | **English**
+
 # LJ RuntimeKit Scheduler Framework User Manual
 
 ## 1. Project Overview
@@ -8,18 +10,19 @@ Key capabilities:
 
 - **Standard Plugin**: Supports NVIDIA whole-card GPUs, AMD GPUs, PPU devices, and virtual GPU scheduling through vCore/vMemory resources.
 - **Mig Plugin**: Supports NVIDIA MIG (Multi-Instance GPU) scheduling for GI and CI resource modes.
+- **ActiveMonitoring Plugin**: Supports targeted GPU scheduling for active-monitoring Pods and makes business Pods prefer nodes and GPUs without active-monitoring Pods.
 - **Topology-aware scheduling**: For 2/4/8-card whole-GPU requests or virtual-GPU multi-replica requests, the scheduler prefers GPU groups that satisfy topology connectivity requirements.
 - **Placement strategies**: Supports `binpack` and `spread` device selection strategies through node labels.
-- **Deployment components**: Provides scheduler, device-plugin, exporter, and controller deployment manifests.
+- **Deployment components**: Provides job-controller, device-plugin, scheduler, exporter, and controller deployment manifests.
 
 ## 2. Technology Stack and Dependencies
 
 | Item | Description |
 |------|-------------|
-| Go version | `go 1.17` |
-| Kubernetes dependencies | `k8s.io/* v0.21.2`, `k8s.io/kubernetes v1.21.2` |
+| Go version | `go 1.21` |
+| Kubernetes dependencies | `k8s.io/* v0.28.0`, `k8s.io/kubernetes v1.28.0` |
 | Scheduling framework | Kubernetes Scheduler Framework |
-| Default image | `registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-scheduler-framework:v1.0.0` |
+| Default image | `lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-scheduler-framework:v1.14.0-k8s1.34` |
 | Default namespace | `kube-system` |
 | Scheduler name | `lj-runtimekit-scheduler` |
 
@@ -27,6 +30,7 @@ The scheduler entry point is `cmd/scheduler/main.go`. The currently registered p
 
 - `Standard`
 - `Mig`
+- `ActiveMonitoring`
 
 ## 3. Scheduling Architecture
 
@@ -58,6 +62,14 @@ The `Mig` plugin implements `Filter` and `Reserve`:
 - **CI mode**: The Pod requests both `aliyun.com/gpu-slice` and `aliyun.com/gpu-memory`.
 - During Reserve, the plugin assigns a MIG mask, topology start, topology size, and device ID, then patches them into Pod annotations.
 
+### 3.4 ActiveMonitoring Plugin
+
+The `ActiveMonitoring` plugin implements `Filter`, `Reserve`, and `Score`:
+
+- **Filter**: A detection Pod passes only nodes with idle GPU minors.
+- **Reserve**: Books the detection Pod onto the GPU minor named by its `rt-diag-target-minor` annotation and patches allocation annotations such as `ALIYUN_COM_GPU_IDX_LIST` (same semantics as Standard's whole-card branch).
+- **Score**: Scores business Pods by a per-card detection-occupancy preference so they avoid cards under detection.
+
 ## 4. Build and Package
 
 ### 4.1 Makefile
@@ -72,7 +84,7 @@ make clean         # Remove local build artifacts
 Common variables:
 
 ```bash
-make docker REGISTRY=registry.cn-hangzhou.aliyuncs.com/eflops-amp VERSION=v1.0.0
+make docker REGISTRY=lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit VERSION=v1.14.0-k8s1.34
 make build GOOS=linux GOARCH=amd64
 ```
 
@@ -87,8 +99,8 @@ bash build.sh [REGISTRY_NAME] [VERSION]
 Default values:
 
 ```bash
-REGISTRY_NAME=registry.cn-hangzhou.aliyuncs.com/eflops-amp
-VERSION=v1.0.0
+REGISTRY_NAME=lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit
+VERSION=v1.14.0-k8s1.34
 ```
 
 Artifacts are generated under `PACK/`:
@@ -110,31 +122,62 @@ The project uses a multi-stage Docker build:
 
 ### 5.1 One-Click Deployment Script
 
-Use `deploy/deploy-all.sh` to deploy or remove components:
+The deployment script has moved from this component directory to `deploy/` at the repository root. All commands below must be run from the repository root:
 
 ```bash
-# Deploy default components: scheduler, device-plugin, exporter, controller
+cd <repository-root>
+
+# Deploy the default components in order:
+# job-controller, device-plugin, scheduler, exporter, controller, migration-worker, migration-controller
 bash deploy/deploy-all.sh deploy
 
 # Deploy selected components
-bash deploy/deploy-all.sh deploy --components=scheduler
+bash deploy/deploy-all.sh deploy --components=job-controller
 bash deploy/deploy-all.sh deploy --components=device-plugin,exporter
+bash deploy/deploy-all.sh deploy --components=migration-controller
 
-# Remove default components
+# Remove the default components (reverse order)
 bash deploy/deploy-all.sh undeploy
 
 # Remove selected components
 bash deploy/deploy-all.sh undeploy --components=controller
+
+# Show help (kubectl not required)
+bash deploy/deploy-all.sh help
 ```
 
 Available components:
 
 | Component | Directory | Deployment method | Description |
 |-----------|-----------|-------------------|-------------|
-| scheduler | `deploy/scheduler` | `kubectl apply -f` | Custom kube-scheduler with Standard/Mig/Gang plugins |
+| job-controller | `deploy/job-controller` | `kubectl apply -f` | IMEX DRA, Profiling, and ActiveMonitoring Job Controller: ComputeDomain/ProfilingJob/ActiveMonitoring CRDs, active-monitoring Pod PriorityClass, DeviceClass, RBAC, profiling collector ConfigMap, and Deployment |
 | device-plugin | `deploy/deviceplugin` | `kubectl apply -f` | GPU device publishing component |
+| scheduler | `deploy/scheduler` | `kubectl apply -f` | Custom kube-scheduler with Standard/Mig/Gang plugins |
 | exporter | `deploy/exporter` | `kubectl apply -f` | GPU metrics exporter, exposes port `9501` |
 | controller | `deploy/controller` | `kubectl apply -f` | AMP Controller for GPU task lifecycle management |
+| migration-worker | `deploy/migration-worker` | `kubectl apply -f` | Worker RBAC / Pod template ConfigMap |
+| migration-controller | `deploy/migration-controller` | `kubectl apply -f` | Migration / Preheat CRDs, RBAC / Controller Pod |
+
+Notes:
+
+- Migration notes: Bash 4+ is required. Deploying `migration-controller` automatically pulls in `migration-worker`, which only installs RBAC and a Pod template; Worker Pods are created on demand. Undeploy keeps the Migration CRDs and is blocked while migration/preheat CRs or Worker Pods exist, or when the query fails. The Worker configuration cannot be undeployed on its own while the Controller still exists. Dragonfly and the authentication Secret are not included; see [Deployment](#51-one-click-deployment-script) for image, storage, and namespace prerequisites and the undeploy steps.
+- The component list given to the script is de-duplicated and executed in the default order (reverse order for undeploy). Only deploying `migration-controller` implicitly adds `migration-worker`; undeploying never widens the selection.
+- The Migration manifests live in `deploy/migration-controller/` and `deploy/migration-worker/` at the repository root; there is no standalone long-running manifest in the Migration-Worker repository. Both images reuse the upstream `lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-migration-{controller,worker}:v1.14.0-k8s1.34`; before a release you must verify or replace the image in `migration-controller/04-deployment.yaml` and `migration-worker/02-configmap.yaml`. This does not mean the images are confirmed pullable or contain the latest sources.
+- Migration Controller waits for both `migration.io` CRDs to be Established before starting; after deployment it only checks that the Controller Deployment is ready and the Worker configuration assets exist. It does not wait for a long-running Worker Pod, and this is not an end-to-end acceptance of checkpoint/restore/preheat. The Controller is a single-replica Deployment (`--leader-election=true`), and image updates go through a Deployment rolling update.
+- Worker keeps `privileged`, `hostNetwork`, and hostPath settings for XDM / the migration directory / Dragonfly / EFC, so the target nodes must have that runtime environment prepared in advance. RBAC covers the `kube-system` and `default` namespaces by default; Workers for PVC jobs live in the PVC's namespace, so other namespaces need an additional `lj-runtimekit-migration-worker` ServiceAccount bound to the same ClusterRole.
+- Controller keeps the upstream `--enable-preheat-job` flag, but the script does not deploy Dragonfly or the authentication Secret. To use the Dragonfly backend, prepare its services and the `dragonfly/dragonfly-preheat-pat` Secret separately; EFC, PVC, and other backends also require their own storage prerequisites.
+- Undeploying Migration keeps both CRDs and does not delete business CRs or Worker Pods, nor remove finalizers. Stop submitting new jobs first and clean up migration/preheat CRs and Workers while the Controller is still running; any of those resources still existing, or a failed query, blocks undeploy. While the Controller still exists, the Worker configuration cannot be undeployed alone; to undeploy both, select both components.
+- Each component applies the top-level `*.yaml`/`*.yml` files of its own directory in numbered order and deletes them in reverse order; subdirectories are not scanned, so the examples under `deploy/job-controller/examples/` are never applied automatically and must be applied by hand once the CRDs exist:
+
+  ```bash
+  kubectl apply -f deploy/job-controller/examples/example-computedomain.yaml
+  kubectl apply -f deploy/job-controller/examples/example-computedomain-aliyun.yaml
+  kubectl apply -f deploy/job-controller/examples/example-activemonitoring.yaml
+  ```
+
+- The job-controller image is `lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-job-controller:v1.14.0-k8s1.34` with `imagePullPolicy: IfNotPresent` and must be prepared in advance: `docker load` it for offline environments, or push it to a private registry and update the image reference in the YAML.
+- job-controller enables IMEX, Profiling, and ActiveMonitoring via `--feature-gates=ComputeDomain=true,Profiling=true,ActiveMonitoring=true`, so the image must include those capabilities; the collector image, socket path, and related settings live in `deploy/job-controller/10-controller-configmap.yaml`.
+- Undeploying job-controller deletes its CRDs, which also deletes all existing ComputeDomain and ProfilingJob custom resources in the cluster.
 
 ### 5.2 Scheduler YAML Deployment
 
@@ -166,17 +209,21 @@ profiles:
         - name: Standard
         - name: Mig
         - name: Gang
+        - name: ActiveMonitoring
       score:
         enabled:
         - name: Standard
           weight: 100
         - name: Gang
           weight: 100
+        - name: ActiveMonitoring
+          weight: 20
       reserve:
         enabled:
         - name: Standard
         - name: Mig
         - name: Gang
+        - name: ActiveMonitoring
       preBind:
         enabled:
         - name: Standard
@@ -196,14 +243,15 @@ Key settings in `helm/values.yaml`:
 ```yaml
 images:
    scheduler:
-      image: "registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-scheduler-framework"
-      tag: v1.0.0
+      image: "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-scheduler-framework"
+      tag: v1.14.0-k8s1.34
       pullPolicy: IfNotPresent
 ```
 
 ## 6. Prerequisites
 
-- Kubernetes cluster compatible with the scheduler dependency version; Kubernetes 1.21.x is recommended.
+- Kubernetes cluster compatible with the scheduler dependency version; Kubernetes 1.28.x is recommended.
+- Deploying `job-controller` requires Kubernetes 1.34 with DRA (Dynamic Resource Allocation).
 - GPU drivers and runtime dependencies are installed on GPU nodes.
 - Nodes that run device-plugin and exporter must be labeled:
 

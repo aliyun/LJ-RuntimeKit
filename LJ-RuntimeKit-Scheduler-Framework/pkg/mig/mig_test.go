@@ -43,6 +43,8 @@ func newTestNode(name string, gpuCount int64, vmemPerGPU, vcorePerGPU int64) *v1
 	return &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
+			// MIG pods may only land on nodes labeled rt_mig_enable=true.
+			Labels: map[string]string{utils.LabelsMigTask: utils.MigLabelValue},
 		},
 		Status: v1.NodeStatus{
 			Allocatable: v1.ResourceList{
@@ -59,6 +61,53 @@ func newTestNodeInfo(name string, gpuCount int64, vmemPerGPU, vcorePerGPU int64)
 	ni := framework.NewNodeInfo()
 	ni.SetNode(newTestNode(name, gpuCount, vmemPerGPU, vcorePerGPU))
 	return ni
+}
+
+// newMigPod builds a pod carrying the MIG label with optional memory and required slices.
+func newMigPod(name string, memory, slice int64) *v1.Pod {
+	limits := v1.ResourceList{
+		v1.ResourceName(utils.ResourceSlice): *resource.NewQuantity(slice, resource.DecimalSI),
+	}
+	if memory > 0 {
+		limits[v1.ResourceName(utils.ResourceMemory)] = *resource.NewQuantity(memory, resource.DecimalSI)
+	}
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			Labels:    map[string]string{utils.LabelsMigTask: utils.MigLabelValue},
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Resources: v1.ResourceRequirements{
+						Limits: limits,
+					},
+				},
+			},
+		},
+	}
+}
+
+// newCpuPod builds a pod requesting only CPU.
+func newCpuPod(name string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Resources: v1.ResourceRequirements{
+						Limits: v1.ResourceList{
+							v1.ResourceCPU: resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 func newMigCycleState(nodeName string, devices ampcache.AvailableDevices, migDevices ampcache.ClusterNodeMigDevices, req ampcache.StandardTaskReq) *framework.CycleState {
@@ -93,23 +142,7 @@ func TestName(t *testing.T) {
 
 func TestFilter_PodNotMigTask_Success(t *testing.T) {
 	// Pod without MIG resources should pass immediately.
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "normal-pod",
-			Namespace: "default",
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Resources: v1.ResourceRequirements{
-						Limits: v1.ResourceList{
-							v1.ResourceCPU: resource.MustParse("1"),
-						},
-					},
-				},
-			},
-		},
-	}
+	pod := newCpuPod("normal-pod")
 
 	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
 	devices := ampcache.BuildCache(nodeInfo)
@@ -123,11 +156,11 @@ func TestFilter_PodNotMigTask_Success(t *testing.T) {
 	assert.Contains(t, status.Message(), "not mig task")
 }
 
-func TestFilter_MigPodTotalCard_Success(t *testing.T) {
-	// Pod requests MIG slice but also has NormalGpuReqCnt > 0 → treated as total card task.
+func TestFilter_SlicePodWithoutMigLabel_NotMigTask(t *testing.T) {
+	// A slice request without the MIG label is an MPS task, so the Mig plugin skips it.
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "total-card-pod",
+			Name:      "mps-pod",
 			Namespace: "default",
 		},
 		Spec: v1.PodSpec{
@@ -142,6 +175,43 @@ func TestFilter_MigPodTotalCard_Success(t *testing.T) {
 			},
 		},
 	}
+
+	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
+	devices := ampcache.BuildCache(nodeInfo)
+	migDevices := make(ampcache.ClusterNodeMigDevices)
+	migDevices["node-1"] = &ampcache.GpuDevice{Devices: make(map[int]*ampcache.Device)}
+	state := newMigCycleState("node-1", devices, migDevices, ampcache.StandardTaskReq{Vslice: 1})
+
+	plugin := &MigPlugin{}
+	status := plugin.Filter(context.Background(), state, pod, nodeInfo)
+	assert.True(t, status.IsSuccess())
+	assert.Contains(t, status.Message(), "not mig task")
+}
+
+func TestFilter_MigPodNodeWithoutMigLabel_Unschedulable(t *testing.T) {
+	// MIG pods may only be scheduled onto nodes labeled rt_mig_enable=true.
+	pod := newMigPod("gi-pod", 0, 1)
+
+	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
+	delete(nodeInfo.Node().Labels, utils.LabelsMigTask)
+	devices := ampcache.BuildCache(nodeInfo)
+	migDevices := make(ampcache.ClusterNodeMigDevices)
+	migDevices["node-1"] = &ampcache.GpuDevice{
+		Devices: map[int]*ampcache.Device{
+			0: {Minor: 0, Health: utils.DeviceHealth, MigEnable: true, Slice: 7, Extensions: map[string]string{}},
+		},
+	}
+	state := newMigCycleState("node-1", devices, migDevices, ampcache.StandardTaskReq{Vslice: 1})
+
+	plugin := &MigPlugin{}
+	status := plugin.Filter(context.Background(), state, pod, nodeInfo)
+	assert.Equal(t, framework.Unschedulable, status.Code())
+	assert.Contains(t, status.Message(), utils.LabelsMigTask)
+}
+
+func TestFilter_MigPodTotalCard_Success(t *testing.T) {
+	// Pod requests MIG slice but also has NormalGpuReqCnt > 0 → treated as total card task.
+	pod := newMigPod("total-card-pod", 0, 1)
 
 	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
 	devices := ampcache.BuildCache(nodeInfo)
@@ -158,23 +228,7 @@ func TestFilter_MigPodTotalCard_Success(t *testing.T) {
 
 func TestFilter_GiPod_NoMigDevice_Unschedulable(t *testing.T) {
 	// GI pod (slice only, no memory) with no MIG device on node → Unschedulable.
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "gi-pod",
-			Namespace: "default",
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Resources: v1.ResourceRequirements{
-						Limits: v1.ResourceList{
-							v1.ResourceName(utils.ResourceSlice): resource.MustParse("1"),
-						},
-					},
-				},
-			},
-		},
-	}
+	pod := newMigPod("gi-pod", 0, 1)
 
 	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
 	devices := ampcache.BuildCache(nodeInfo)
@@ -192,23 +246,7 @@ func TestFilter_GiPod_NoMigDevice_Unschedulable(t *testing.T) {
 
 func TestFilter_GiPod_WithMigDevice_Success(t *testing.T) {
 	// GI pod with available MIG device → Success.
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "gi-pod",
-			Namespace: "default",
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Resources: v1.ResourceRequirements{
-						Limits: v1.ResourceList{
-							v1.ResourceName(utils.ResourceSlice): resource.MustParse("1"),
-						},
-					},
-				},
-			},
-		},
-	}
+	pod := newMigPod("gi-pod", 0, 1)
 
 	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
 	devices := ampcache.BuildCache(nodeInfo)
@@ -235,24 +273,7 @@ func TestFilter_GiPod_WithMigDevice_Success(t *testing.T) {
 
 func TestFilter_CiPod_WithMigDevice_Success(t *testing.T) {
 	// CI pod (requests both slice and memory) with available MIG device → Success.
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ci-pod",
-			Namespace: "default",
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Resources: v1.ResourceRequirements{
-						Limits: v1.ResourceList{
-							v1.ResourceName(utils.ResourceSlice):  resource.MustParse("1"),
-							v1.ResourceName(utils.ResourceMemory): resource.MustParse("2048"),
-						},
-					},
-				},
-			},
-		},
-	}
+	pod := newMigPod("ci-pod", 2048, 1)
 
 	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
 	devices := ampcache.BuildCache(nodeInfo)
@@ -286,23 +307,7 @@ func TestFilter_CiPod_WithMigDevice_Success(t *testing.T) {
 // The following tests only cover the early-exit paths.
 
 func TestReserve_PodNotMigTask_Success(t *testing.T) {
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "normal-pod",
-			Namespace: "default",
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Resources: v1.ResourceRequirements{
-						Limits: v1.ResourceList{
-							v1.ResourceCPU: resource.MustParse("1"),
-						},
-					},
-				},
-			},
-		},
-	}
+	pod := newCpuPod("normal-pod")
 
 	state := framework.NewCycleState()
 	plugin := &MigPlugin{}
@@ -312,23 +317,7 @@ func TestReserve_PodNotMigTask_Success(t *testing.T) {
 }
 
 func TestReserve_TotalCardTask_Success(t *testing.T) {
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "total-card-pod",
-			Namespace: "default",
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Resources: v1.ResourceRequirements{
-						Limits: v1.ResourceList{
-							v1.ResourceName(utils.ResourceSlice): resource.MustParse("1"),
-						},
-					},
-				},
-			},
-		},
-	}
+	pod := newMigPod("total-card-pod", 0, 1)
 
 	nodeInfo := newTestNodeInfo("node-1", 4, 16384, 100)
 	devices := ampcache.BuildCache(nodeInfo)

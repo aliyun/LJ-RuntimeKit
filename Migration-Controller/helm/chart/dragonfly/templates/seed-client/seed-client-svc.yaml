@@ -1,0 +1,42 @@
+{{- if .Values.seedClient.enable }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ template "dragonfly.seedClient.fullname" . }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels:
+    app: {{ template "dragonfly.name" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: {{ .Values.seedClient.name }}
+{{- if .Values.seedClient.service.labels }}
+{{ toYaml .Values.seedClient.service.labels | indent 4 }}
+{{- end }}
+{{- if .Values.seedClient.service.annotations }}
+  annotations:
+{{ toYaml .Values.seedClient.service.annotations | indent 4 }}
+{{- end }}
+spec:
+  type: {{ .Values.seedClient.service.type }}
+  ports:
+    - port: {{ .Values.seedClient.config.proxy.server.port }}
+      name: http-proxy
+      protocol: TCP
+      targetPort: {{ .Values.seedClient.config.proxy.server.port }}
+    - port: {{ .Values.seedClient.config.health.server.port }}
+      name: http-health
+      protocol: TCP
+      targetPort: {{ .Values.seedClient.config.health.server.port }}
+    - port: {{ .Values.seedClient.config.stats.server.port }}
+      name: http-stats
+      protocol: TCP
+      targetPort: {{ .Values.seedClient.config.stats.server.port }}
+{{- if eq .Values.seedClient.service.type "NodePort" }}
+      nodePort: {{ .Values.seedClient.service.nodePort }}
+{{- end }}
+  selector:
+    app: {{ template "dragonfly.fullname" . }}
+    release: {{ .Release.Name }}
+    component: {{ .Values.seedClient.name }}
+{{- end }}

@@ -1,0 +1,24 @@
+apiVersion: v1
+data:
+  manager.yaml: "server:\n  rest:\n    addr: :8080\n  grpc:\n    advertiseIP: \n    port:\n
+    \     start: 65003\n      end: 65003\n  workHome: \n  logDir: \n  cacheDir: \n
+    \ pluginDir: \nauth:\n  jwt:\n    key: ZHJhZ29uZmx5Cg==\n    maxRefresh: 48h\n
+    \   realm: Dragonfly\n    timeout: 48h\ndatabase:\n  mysql:\n    user: dragonfly\n
+    \   password: dragonfly123\n    host: dragonfly-mysql-ext.dragonfly.svc.cluster.local\n
+    \   port: 3306\n    dbname: dragonfly\n    migrate: true\n  redis:\n    addrs:\n
+    \     - dragonfly-redis-ext.dragonfly.svc.cluster.local:6379\n    masterName:
+    \n    username: \n    password: \n    db: 0\n    brokerDB: 1\n    backendDB: 2\ncache:\n
+    \ local:\n    size: 30000\n    ttl: 3m\n  redis:\n    addrs:\n    - dragonfly-redis-ext.dragonfly.svc.cluster.local:6379\n
+    \   ttl: 5m\njob:\n  gc:\n    interval: 3h\n    ttl: 6h\n  preheat:\n    registryTimeout:
+    1m\n    tls:\n      insecureSkipVerify: false\n  rateLimit:\n    capacity: 10\n
+    \   fillInterval: 1m\n    quantum: 10\n  syncPeers:\n    interval: 24h\n    timeout:
+    10m\nnetwork:\n  enableIPv6: false\nmetrics:\n  enable: true\n  addr: \":8000\"\nconsole:
+    true\nverbose: false"
+kind: ConfigMap
+metadata:
+  annotations:
+  labels:
+    app: dragonfly
+    component: manager
+  name: dragonfly-manager
+  namespace: dragonfly

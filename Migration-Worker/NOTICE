@@ -1,0 +1,21 @@
+migration-worker
+Copyright (c) 2024-2026 Alibaba Cloud.
+
+This product is licensed under the Apache License, Version 2.0
+(see the LICENSE file for details).
+
+------------------------------------------------------------
+Third-party code attribution
+------------------------------------------------------------
+
+This product contains source code adapted from the following project:
+
+  Docker / Moby
+  https://github.com/moby/moby
+  Copyright 2013-2018 Docker, Inc.
+  Licensed under the Apache License, Version 2.0
+
+  The adapted files live under:
+    pkg/util/archive/
+
+  Per-file attribution is preserved in the source file headers.

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -34,21 +35,13 @@ const (
 	CheckpointStatusAllocated = "allocated"
 	CheckpointStatusPreStart  = "prestart"
 	CheckpointStatusDone      = "done"
-
-	// CheckpointDoneRecordTTL bounds how long a finished (done) record is
-	// kept. It must cover the window in which xdm still consumes the
-	// allocateID <-> pod mapping of a running pod.
-	CheckpointDoneRecordTTL = 24 * time.Hour
-	// CheckpointMaxRecordAge is the last-resort leak guard: no allocation
-	// flow legitimately stays in allocated/prestart for days, so any record
-	// older than this is dropped to keep the checkpoint file bounded.
-	CheckpointMaxRecordAge = 7 * 24 * time.Hour
 )
 
 var (
 	// DpCheckpointPath is the device plugin checkpoint file. Declared as var
 	// so tests can override it.
-	DpCheckpointPath = "/var/lib/kubelet/device-plugins/deviceplugin_internal_checkpoint"
+	OldDpCheckpointPath = "/var/lib/kubelet/device-plugins/deviceplugin_internal_checkpoint"
+	DpCheckpointPath    = "/var/lib/kubelet/device-plugins/checkpoint/deviceplugin_internal_checkpoint"
 )
 
 // AllocateRecord describes one Allocate request context.
@@ -87,11 +80,19 @@ func GenerateAllocateID() string {
 // A dedicated lock file is used because the checkpoint file itself is
 // replaced atomically via rename, which would invalidate locks held on it.
 func acquireLock() (*os.File, error) {
-	f, err := os.OpenFile(DpCheckpointPath+".lock", os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open checkpoint lock file failed: %w", err)
+	if err := os.MkdirAll(filepath.Dir(DpCheckpointPath), 0755); err != nil {
+		return nil, fmt.Errorf("create checkpoint directory failed: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	return acquireCheckpointLock(DpCheckpointPath+".lock", syscall.LOCK_EX)
+}
+
+// acquireCheckpointLock 也用于迁移时锁定旧账本，防止复制期间被修改。
+func acquireCheckpointLock(path string, operation int) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open checkpoint lock file %s failed: %w", path, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), operation); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("flock checkpoint lock file failed: %w", err)
 	}
@@ -103,6 +104,142 @@ func releaseLock(f *os.File) {
 		klog.Warningf("unlock checkpoint lock file failed: %v", err)
 	}
 	f.Close()
+}
+
+// MigrateDpCheckpoint 在启动阶段迁移旧账本。旧版本进程须已停止；迁移失败
+// 必须终止启动，不能丢弃历史记录后继续服务。锁文件只重建，不复制锁状态。
+func MigrateDpCheckpoint() error {
+	processLock.Lock()
+	defer processLock.Unlock()
+
+	lockFile, err := acquireLock()
+	if err != nil {
+		return err
+	}
+	defer releaseLock(lockFile)
+
+	if filepath.Clean(OldDpCheckpointPath) == filepath.Clean(DpCheckpointPath) {
+		return initializeCheckpointLocked()
+	}
+
+	_, newErr := os.Stat(DpCheckpointPath)
+	if newErr != nil && !os.IsNotExist(newErr) {
+		return fmt.Errorf("stat new checkpoint failed: %w", newErr)
+	}
+	newExists := newErr == nil
+	if newExists {
+		// 已有新账本始终是程序使用的账本，先确认它可正常读取。
+		if _, err := loadCheckpointLocked(); err != nil {
+			return err
+		}
+	}
+
+	_, checkpointErr := os.Stat(OldDpCheckpointPath)
+	if checkpointErr != nil && !os.IsNotExist(checkpointErr) {
+		return fmt.Errorf("stat old checkpoint failed: %w", checkpointErr)
+	}
+	_, lockErr := os.Stat(OldDpCheckpointPath + ".lock")
+	if lockErr != nil && !os.IsNotExist(lockErr) {
+		return fmt.Errorf("stat old checkpoint lock failed: %w", lockErr)
+	}
+	if os.IsNotExist(checkpointErr) && os.IsNotExist(lockErr) {
+		return initializeCheckpointLocked()
+	}
+
+	// 非阻塞获取旧锁，旧进程正在使用账本时保留文件并拒绝迁移。
+	oldLock, err := acquireCheckpointLock(OldDpCheckpointPath+".lock", syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		return fmt.Errorf("lock old checkpoint for migration failed: %w", err)
+	}
+	defer releaseLock(oldLock)
+
+	content, err := os.ReadFile(OldDpCheckpointPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read old checkpoint failed: %w", err)
+	}
+	if err == nil {
+		destination := DpCheckpointPath
+		if newExists {
+			// 新旧都存在：旧文件仅作独立备份，不覆盖新账本或已有备份。
+			destination += ".bak-" + time.Now().Format("20060102-150405.000000000")
+		} else {
+			// 仅旧账本存在：校验后原样复制，保留所有记录及未知字段。
+			var data dpCheckpointData
+			if len(content) > 0 {
+				if err := json.Unmarshal(content, &data); err != nil {
+					return fmt.Errorf("unmarshal old checkpoint failed: %w", err)
+				}
+			}
+		}
+		if err := copyCheckpointLocked(destination, content); err != nil {
+			return err
+		}
+		if err := os.Remove(OldDpCheckpointPath); err != nil {
+			return fmt.Errorf("remove migrated old checkpoint failed: %w", err)
+		}
+		klog.Infof("copied old dp checkpoint from %s to %s", OldDpCheckpointPath, destination)
+	} else {
+		// 旧账本已删除但锁还在：确保新账本存在，然后清理旧锁。
+		if err := initializeCheckpointLocked(); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(OldDpCheckpointPath + ".lock"); err != nil {
+		return fmt.Errorf("remove old checkpoint lock failed: %w", err)
+	}
+	return syncCheckpointDirectory(filepath.Dir(OldDpCheckpointPath))
+}
+
+// initializeCheckpointLocked 保留已有账本；没有账本则创建空记录文件。
+func initializeCheckpointLocked() error {
+	if _, err := loadCheckpointLocked(); err != nil {
+		return err
+	}
+	if _, err := os.Stat(DpCheckpointPath); os.IsNotExist(err) {
+		return copyCheckpointLocked(DpCheckpointPath, []byte(`{"records":{}}`))
+	} else {
+		return err
+	}
+}
+
+// copyCheckpointLocked 先写入新目录的临时文件并 fsync，再原子发布。
+// 目标文件和目录落盘前，调用方不会删除旧账本。
+func copyCheckpointLocked(destination string, content []byte) error {
+	dir := filepath.Dir(destination)
+	tmp, err := os.CreateTemp(dir, ".checkpoint-migration-*")
+	if err != nil {
+		return fmt.Errorf("create migration temp file failed: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if err := tmp.Chmod(0644); err != nil {
+		return fmt.Errorf("chmod migration temp file failed: %w", err)
+	}
+	if _, err := tmp.Write(content); err != nil {
+		return fmt.Errorf("write migration temp file failed: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync migration temp file failed: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close migration temp file failed: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), destination); err != nil {
+		return fmt.Errorf("publish migrated checkpoint failed: %w", err)
+	}
+	return syncCheckpointDirectory(dir)
+}
+
+func syncCheckpointDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open checkpoint directory failed: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("sync checkpoint directory failed: %w", err)
+	}
+	return nil
 }
 
 func loadCheckpointLocked() (*dpCheckpointData, error) {
@@ -143,7 +280,9 @@ func saveCheckpointLocked(data *dpCheckpointData) error {
 }
 
 // SaveAllocateRecord appends one Allocate record into the checkpoint file.
-// Expired records are pruned on the fly so the file stays bounded.
+// It never drops existing records: a record is the only proof that an
+// allocation still exists for xdm, so it may only be removed by the GC after
+// the pod behind it is proven gone.
 func SaveAllocateRecord(record *AllocateRecord) error {
 	processLock.Lock()
 	defer processLock.Unlock()
@@ -158,34 +297,8 @@ func SaveAllocateRecord(record *AllocateRecord) error {
 	if err != nil {
 		return err
 	}
-	if pruned := pruneExpiredRecordsLocked(data); pruned > 0 {
-		klog.Infof("pruned %d expired allocate record(s) from checkpoint", pruned)
-	}
 	data.Records[record.AllocateID] = record
 	return saveCheckpointLocked(data)
-}
-
-// pruneExpiredRecordsLocked drops done records older than their TTL and any
-// record older than the max age leak guard. Returns the prune count.
-func pruneExpiredRecordsLocked(data *dpCheckpointData) int {
-	now := time.Now().UnixNano()
-	pruned := 0
-	for id, record := range data.Records {
-		refTime := record.UpdateTime
-		if refTime == 0 {
-			refTime = record.CreateTime
-		}
-		if refTime == 0 {
-			// no timestamp at all: keep the record instead of guessing its age
-			continue
-		}
-		age := time.Duration(now - refTime)
-		if (record.Status == CheckpointStatusDone && age > CheckpointDoneRecordTTL) || age > CheckpointMaxRecordAge {
-			delete(data.Records, id)
-			pruned++
-		}
-	}
-	return pruned
 }
 
 // UpdateAllocateRecord applies updateFn to the record of the given
@@ -314,35 +427,84 @@ func ListAllRecords() ([]*AllocateRecord, error) {
 	return records, nil
 }
 
-// DeleteAllocateRecords removes the given records from the checkpoint.
-// Missing ids are ignored to tolerate concurrent cleanup.
-func DeleteAllocateRecords(allocateIDs []string) error {
-	if len(allocateIDs) == 0 {
-		return nil
+// LoadAllocateRecord returns the record of the given allocateID. A missing
+// record is reported as an error so callers can tell it apart from a live one.
+func LoadAllocateRecord(allocateID string) (*AllocateRecord, error) {
+	processLock.Lock()
+	defer processLock.Unlock()
+
+	lockFile, err := acquireLock()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLock(lockFile)
+
+	data, err := loadCheckpointLocked()
+	if err != nil {
+		return nil, err
+	}
+	record, ok := data.Records[allocateID]
+	if !ok || record == nil {
+		return nil, fmt.Errorf("allocate record %s not found in checkpoint", allocateID)
+	}
+	return record, nil
+}
+
+// sameRecordVersion reports whether the stored record still equals a snapshot
+// taken earlier. PodUID, Status and UpdateTime are the fields any later stage
+// rewrites, so a difference means the allocation moved on and a decision taken
+// on the snapshot is stale.
+func sameRecordVersion(snapshot *AllocateRecord, current *AllocateRecord) bool {
+	if snapshot == nil || current == nil {
+		return false
+	}
+	return snapshot.PodUID == current.PodUID &&
+		snapshot.Status == current.Status &&
+		snapshot.UpdateTime == current.UpdateTime
+}
+
+// DeleteUnchangedAllocateRecords deletes the given snapshot records and skips
+// the ones another stage advanced in the meantime, so a decision taken on a
+// stale snapshot can never drop a live allocation. It returns the deleted
+// count and the ids kept because they changed.
+func DeleteUnchangedAllocateRecords(expected []*AllocateRecord) (int, []string, error) {
+	if len(expected) == 0 {
+		return 0, nil, nil
 	}
 	processLock.Lock()
 	defer processLock.Unlock()
 
 	lockFile, err := acquireLock()
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	defer releaseLock(lockFile)
 
 	data, err := loadCheckpointLocked()
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	deleted := 0
-	for _, id := range allocateIDs {
-		if _, ok := data.Records[id]; ok {
-			delete(data.Records, id)
-			deleted++
+	var kept []string
+	for _, snapshot := range expected {
+		if snapshot == nil {
+			continue
 		}
+		current, ok := data.Records[snapshot.AllocateID]
+		if !ok {
+			// already removed by another writer, nothing left to do
+			continue
+		}
+		if !sameRecordVersion(snapshot, current) {
+			kept = append(kept, snapshot.AllocateID)
+			continue
+		}
+		delete(data.Records, snapshot.AllocateID)
+		deleted++
 	}
 	if deleted == 0 {
-		return nil
+		return 0, kept, nil
 	}
 	klog.Infof("deleted %d allocate record(s) from checkpoint", deleted)
-	return saveCheckpointLocked(data)
+	return deleted, kept, saveCheckpointLocked(data)
 }

@@ -537,3 +537,418 @@ func TestIsLocalPendingReady(t *testing.T) {
 	assert.True(t, IsLocalPendingReady(noConditionPod)) // no ready condition → treated as not ready
 	assert.True(t, IsLocalPendingReady(pendingPod))     // not running → local pending ready
 }
+
+// newGpuTaskPod builds a pod with the given labels and container limits.
+func newGpuTaskPod(labels map[string]string, limits map[string]string) *v1.Pod {
+	rl := v1.ResourceList{}
+	for name, qty := range limits {
+		rl[v1.ResourceName(name)] = resource.MustParse(qty)
+	}
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "gpu-task-pod", Labels: labels},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Resources: v1.ResourceRequirements{Limits: rl},
+				},
+			},
+		},
+	}
+}
+
+// TestGetPodGpuTaskType verifies the task classification priority:
+// whole-card > MIG > time-sharing > MPS.
+func TestGetPodGpuTaskType(t *testing.T) {
+	migLabels := map[string]string{LabelsMigTask: MigLabelValue}
+
+	tests := []struct {
+		name     string
+		pod      *v1.Pod
+		expected PodGpuTaskType
+	}{
+		{
+			name:     "whole card via nvidia.com/gpu",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceNvidia: "1"}),
+			expected: PodGpuTaskWholeCard,
+		},
+		{
+			name:     "whole card via gpu-core >= 100",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceCore: "100"}),
+			expected: PodGpuTaskWholeCard,
+		},
+		{
+			name:     "whole card wins over gpu-slice",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceNvidia: "1", ResourceSlice: "2"}),
+			expected: PodGpuTaskWholeCard,
+		},
+		{
+			name:     "whole card wins over MIG slice",
+			pod:      newGpuTaskPod(migLabels, map[string]string{ResourceNvidia: "1", ResourceSlice: "2"}),
+			expected: PodGpuTaskWholeCard,
+		},
+		{
+			name:     "MIG task",
+			pod:      newGpuTaskPod(migLabels, map[string]string{ResourceSlice: "2"}),
+			expected: PodGpuTaskMig,
+		},
+		{
+			name:     "MIG wins over gpu-core<100",
+			pod:      newGpuTaskPod(migLabels, map[string]string{ResourceSlice: "2", ResourceCore: "50"}),
+			expected: PodGpuTaskMig,
+		},
+		{
+			name:     "time-sharing via gpu-core<100",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceCore: "50"}),
+			expected: PodGpuTaskTimeSharing,
+		},
+		{
+			name:     "time-sharing wins over gpu-slice",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceCore: "50", ResourceSlice: "1"}),
+			expected: PodGpuTaskTimeSharing,
+		},
+		{
+			name:     "time-sharing via gpu-memory only",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceMemory: "512"}),
+			expected: PodGpuTaskTimeSharing,
+		},
+		{
+			name:     "MPS is the lowest priority class",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceSlice: "1"}),
+			expected: PodGpuTaskMps,
+		},
+		{
+			name:     "cpu pod has no gpu task type",
+			pod:      newGpuTaskPod(nil, nil),
+			expected: PodGpuTaskNone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, GetPodGpuTaskType(tt.pod))
+		})
+	}
+}
+
+// TestGetPodTaskModePriority verifies the TaskMode mapping of each task type.
+func TestGetPodTaskModePriority(t *testing.T) {
+	migLabels := map[string]string{LabelsMigTask: MigLabelValue}
+
+	tests := []struct {
+		name     string
+		pod      *v1.Pod
+		expected TaskMode
+	}{
+		{
+			name:     "whole card is normal mode",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceNvidia: "1"}),
+			expected: TaskModeNormal,
+		},
+		{
+			name:     "MIG is normal mode",
+			pod:      newGpuTaskPod(migLabels, map[string]string{ResourceSlice: "1"}),
+			expected: TaskModeNormal,
+		},
+		{
+			name:     "time-sharing is normal mode",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceCore: "50"}),
+			expected: TaskModeNormal,
+		},
+		{
+			name:     "MPS is mps mode",
+			pod:      newGpuTaskPod(nil, map[string]string{ResourceSlice: "1"}),
+			expected: TaskModeMPS,
+		},
+		{
+			name:     "cpu pod is unknown",
+			pod:      newGpuTaskPod(nil, nil),
+			expected: TaskModeUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, GetPodTaskMode(tt.pod))
+		})
+	}
+}
+
+func TestIsMpsPodTask(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *v1.Pod
+		expected bool
+	}{
+		{
+			name: "MPS task requesting gpu-slice only",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceSlice): resource.MustParse("2"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "MPS task requesting gpu-slice and gpu-memory",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceSlice):  resource.MustParse("1"),
+									v1.ResourceName(ResourceMemory): resource.MustParse("512"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "gpu-slice with the MIG label is not MPS",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{LabelsMigTask: MigLabelValue},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceSlice): resource.MustParse("1"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "gpu-memory only is a time-sharing task, not MPS",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceMemory): resource.MustParse("512"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "gpu-core only is a time-sharing task, not MPS",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceCore): resource.MustParse("50"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "gpu-slice with nvidia.com/gpu is a whole card task, not MPS",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceSlice):  resource.MustParse("1"),
+									v1.ResourceName(ResourceNvidia): resource.MustParse("1"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "gpu-slice with gpu-core<100 is a time-sharing task, not MPS",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceSlice): resource.MustParse("1"),
+									v1.ResourceName(ResourceCore):  resource.MustParse("50"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "public MIG annotation without gpu-slice is not MPS",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "public-mig-pod",
+					Annotations: map[string]string{AnnoMigDeviceEnableKey: "true"},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceMemory): resource.MustParse("512"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, IsMpsPodTask(tt.pod))
+		})
+	}
+}
+
+func TestIsNormalVirtualTask(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *v1.Pod
+		expected bool
+	}{
+		{
+			name: "time-sharing task with gpu-core<100",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceCore): resource.MustParse("50"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "gpu-memory only is a time-sharing task",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceMemory): resource.MustParse("512"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "gpu-slice only is an MPS task, not normal virtual",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceSlice): resource.MustParse("1"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "gpu-slice with gpu-core<100 is a time-sharing task",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceCore):  resource.MustParse("50"),
+									v1.ResourceName(ResourceSlice): resource.MustParse("1"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "gpu-slice with gpu-memory is not normal virtual",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceSlice):  resource.MustParse("1"),
+									v1.ResourceName(ResourceMemory): resource.MustParse("512"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "gpu-core=100 is not normal virtual",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName(ResourceCore): resource.MustParse("100"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, IsNormalVirtualTask(tt.pod))
+		})
+	}
+}

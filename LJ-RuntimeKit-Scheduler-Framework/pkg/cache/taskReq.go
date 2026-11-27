@@ -16,7 +16,11 @@ limitations under the License.
 
 package cache
 
-import "k8s.io/kubernetes/pkg/scheduler/framework"
+import (
+	"github.com/lj-runtimekit/scheduler/pkg/utils"
+
+	"k8s.io/kubernetes/pkg/scheduler/framework"
+)
 
 // StandardTaskReq represents the resource request parsed from a pod during PreFilter.
 type StandardTaskReq struct {
@@ -30,19 +34,23 @@ type StandardTaskReq struct {
 	VReplicas int
 	// NormalGpuReqCnt is the number of whole GPU cards requested.
 	NormalGpuReqCnt int
+	// TaskMode is the scheduling mode of the pod (MPS, time-share, normal virtual, or unknown).
+	TaskMode utils.TaskMode
 	// AoaReplicas maps node names to required AOA replica counts.
 	AoaReplicas map[string]int
 }
 
 // Clone returns a deep copy of the StandardTaskReq.
 func (d StandardTaskReq) Clone() framework.StateData {
-	target := new(StandardTaskReq)
-	target.Vmem = d.Vmem
-	target.Vcore = d.Vcore
-	target.Vslice = d.Vslice
-	target.VReplicas = d.VReplicas
-	target.NormalGpuReqCnt = d.NormalGpuReqCnt
-	target.AoaReplicas = make(map[string]int)
+	target := StandardTaskReq{
+		Vmem:            d.Vmem,
+		Vcore:           d.Vcore,
+		Vslice:          d.Vslice,
+		VReplicas:       d.VReplicas,
+		NormalGpuReqCnt: d.NormalGpuReqCnt,
+		TaskMode:        d.TaskMode,
+		AoaReplicas:     make(map[string]int, len(d.AoaReplicas)),
+	}
 	for nodeName, replicas := range d.AoaReplicas {
 		target.AoaReplicas[nodeName] = replicas
 	}

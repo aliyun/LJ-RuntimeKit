@@ -1,10 +1,25 @@
 #!/bin/bash
+#
+# Copyright (c) 2024-2026 Alibaba Cloud.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # Build script for LJ-RuntimeKit-Controller
 set -e
 
 # Default values
-CONTROLLER_IMG=${CONTROLLER_IMG:-"lj-runtimekit-controller:latest"}
-JOB_AGENT_IMG=${JOB_AGENT_IMG:-"lj-runtimekit-controller-job-agent:latest"}
+CONTROLLER_IMG=${CONTROLLER_IMG:-"lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller:v1.14.0-k8s1.34"}
+JOB_AGENT_IMG=${JOB_AGENT_IMG:-"lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:v1.14.0-k8s1.34"}
 BUILDER_IMAGE=${BUILDER_IMAGE:-"public.ecr.aws/docker/library/golang:1.22.7"}
 BASE_IMAGE=${BASE_IMAGE:-"public.ecr.aws/docker/library/alpine:3.19"}
 PLATFORM=${PLATFORM:-"linux/amd64"}
@@ -33,8 +48,8 @@ usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --controller-img IMAGE    Controller docker image (default: lj-runtimekit-controller:latest)"
-    echo "  --job-agent-img IMAGE     Job agent docker image (default: lj-runtimekit-controller-job-agent:latest)"
+    echo "  --controller-img IMAGE    Controller docker image (default: lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller:v1.14.0-k8s1.34)"
+    echo "  --job-agent-img IMAGE     Job agent docker image (default: lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:v1.14.0-k8s1.34)"
     echo "  --builder-image IMAGE     Builder image (default: public.ecr.aws/docker/library/golang:1.22.7)"
     echo "  --base-image IMAGE        Base image (default: public.ecr.aws/docker/library/alpine:3.19)"
     echo "  --platform PLATFORM       Target platform (default: linux/amd64)"

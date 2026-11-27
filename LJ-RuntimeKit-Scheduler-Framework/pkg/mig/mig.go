@@ -53,6 +53,10 @@ func (p *MigPlugin) Name() string {
 }
 
 func (p *MigPlugin) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	// Detection Pods are pinned by the ActiveMonitoring plugin.
+	if utils.IsActiveMonitoringPod(pod) {
+		return framework.NewStatus(framework.Success, "skip activemonitoring pod, handled by ActiveMonitoring plugin")
+	}
 	klog.V(5).Infof("start mig plugin filter process for pod %s in node %s", pod.Name, nodeInfo.Node().Name)
 
 	if !utils.IsMigPodTask(pod) {
@@ -73,6 +77,15 @@ func (p *MigPlugin) Filter(ctx context.Context, state *framework.CycleState, pod
 	if node == nil {
 		return framework.NewStatus(framework.Error, "node not found")
 	}
+
+	// MIG pods may only be scheduled onto nodes labeled rt_mig_enable=true.
+	if !utils.NodeSupportsMig(node) {
+		klog.V(5).Infof("node %s does not carry label %s=%s required by mig pod %s/%s",
+			node.Name, utils.LabelsMigTask, utils.MigLabelValue, pod.Namespace, pod.Name)
+		return framework.NewStatus(framework.Unschedulable, fmt.Sprintf("node %s is not labeled %s=%s required by mig pod",
+			node.Name, utils.LabelsMigTask, utils.MigLabelValue))
+	}
+
 	var newFunc migDevice.NewFactory
 	var err error
 	switch {
@@ -119,6 +132,10 @@ func (p *MigPlugin) Filter(ctx context.Context, state *framework.CycleState, pod
 }
 
 func (p *MigPlugin) Reserve(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) *framework.Status {
+	// Detection Pods are not MIG tasks and are pinned by ActiveMonitoring plugin.
+	if utils.IsActiveMonitoringPod(pod) {
+		return framework.NewStatus(framework.Success, "skip activemonitoring pod, handled by ActiveMonitoring plugin")
+	}
 	klog.V(5).Infof("start mig plugin Reserve process for pod %s/%s in node %s", pod.Namespace, pod.Name, nodeName)
 
 	if !utils.IsMigPodTask(pod) {

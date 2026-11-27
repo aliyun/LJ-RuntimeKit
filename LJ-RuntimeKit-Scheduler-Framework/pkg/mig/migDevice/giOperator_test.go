@@ -337,7 +337,7 @@ func TestGiAssumePod_DeviceUsedByCi_Excluded(t *testing.T) {
 			Name:      "existing-ci-pod",
 			Namespace: "default",
 			Annotations: map[string]string{
-				utils.AnnoDeviceIndex:  "0",
+				utils.AnnoDeviceIndex:   "0",
 				utils.AnnoMigDeviceType: string(utils.TypeMigCi),
 			},
 		},
@@ -358,7 +358,8 @@ func TestGiAssumePod_DeviceUsedByCi_Excluded(t *testing.T) {
 			Phase: v1.PodRunning,
 		},
 	}
-	podInfo := framework.NewPodInfo(ciPod)
+	podInfo, err := framework.NewPodInfo(ciPod)
+	assert.NoError(t, err)
 	nodeInfo.AddPodInfo(podInfo)
 
 	nodeDevices := ampcache.BuildCache(nodeInfo)

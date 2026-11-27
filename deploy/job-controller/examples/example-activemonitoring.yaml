@@ -1,0 +1,50 @@
+# ActiveMonitoring custom resource example
+#
+# ActiveMonitoring declares a per-card GPU detection (SDC) policy. The controller
+# then:
+#   1. enumerates every GPU (minor) on the target nodes and builds the detection
+#      queue (status.queue)
+#   2. creates one pinned detection Pod per card (nodeAffinity locks the node,
+#      the rt-diag-target-minor annotation locks the card)
+#   3. watches the Pod lifecycle, parses terminationMessage back into result,
+#      and retries/recreates the Pod on preemption or failure
+#
+# Prerequisites:
+#   - The ActiveMonitoring CRD is installed in the cluster
+#     (runtimekit.io/v1alpha1)
+#   - The activemonitoring controller is enabled (--enable-controllers=* or an
+#     explicit list containing activemonitoring)
+#   - Detection Pods are scheduled by lj-runtimekit-scheduler; without the
+#     scheduler pinning plugin they stay Pending
+---
+apiVersion: runtimekit.io/v1alpha1
+kind: ActiveMonitoring
+metadata:
+  name: burn-test-20261021
+  namespace: default
+spec:
+  # allLjRuntimeKitEnabled — when true, affinity is ignored and every node with
+  #   the lj_runtimekit_enable="true" label and GPUs is selected automatically
+  allLjRuntimeKitEnabled: false
+
+  # affinity — standard K8s affinity; only nodeAffinity takes effect and is used
+  # to select target nodes
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values: ["gpu-node-01", "gpu-node-02"]
+
+  schedule:
+    # interval — trigger interval of each cycle
+    interval: "4h"
+    # roundsPerCycle — detection rounds per card per cycle (default 1)
+    roundsPerCycle: 1
+    # totalCycles — total number of cycles; 0 means unlimited
+    totalCycles: 0
+
+  # concurrency — cap on concurrently effective detection Pods
+  concurrency: 0

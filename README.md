@@ -2,6 +2,11 @@
 
 LJ-RuntimeKit is a set of open-source Kubernetes components for managing heterogeneous accelerator resources (GPU, PPU, etc.) in cloud-native environments. It works alongside the LJ Runtime Kit daemon to provide device discovery, resource scheduling, monitoring, and lifecycle management.
 
+## Documentation
+
+Product documentation for Lingjun Intelligent Computing:
+<https://help.aliyun.com/zh/intelligent-computing-lingjun/product-introduction-2>
+
 ## Components
 
 | Component | Description |
@@ -10,6 +15,9 @@ LJ-RuntimeKit is a set of open-source Kubernetes components for managing heterog
 | **LJ-RuntimeKit-Scheduler-Framework** | Out-of-tree Scheduler Framework plugin that provides topology-aware scoring, time-sharing scheduling, and MIG-aware placement for heterogeneous resources. |
 | **LJ-RuntimeKit-Exporter** | Prometheus exporter that collects accelerator metrics (utilization, memory, temperature, etc.) via gRPC and exposes them as standard Prometheus endpoints. |
 | **LJ-RuntimeKit-Controller** | Kubernetes controller that watches node label changes and manages the enable/disable lifecycle of runtime components on target nodes via Job-based agents. |
+| **LJ-RuntimeKit-JobController** | Controller for profiling and ComputeDomain (DRA) jobs, including the node agent that runs them. |
+| **Migration-Controller** | Control plane for container live migration, providing the `migration.io` CRDs and their controllers. |
+| **Migration-Worker** | Data-plane worker pods that perform checkpoint and restore during container live migration. |
 
 ## Quick Start
 
@@ -25,7 +33,7 @@ Pre-built container images are available for each component. Deploy using the un
 ./deploy/deploy-all.sh deploy --components=device-plugin,scheduler,exporter,controller
 ```
 
-The deployment script is located in the `LJ-RuntimeKit-Scheduler-Framework/deploy/` directory.
+The deployment script and manifests are located in the `deploy/` directory at the repository root.
 
 ### Building from Source
 
@@ -61,12 +69,12 @@ The Scheduler Framework is compiled as an out-of-tree plugin against `k8s.io/kub
 
 ```bash
 cd LJ-RuntimeKit-Scheduler-Framework
-./hack/download-deps.sh v1.28.0
+./hack/download-deps.sh v1.34.0
 go mod tidy && go mod vendor
 make build
 ```
 
-Pre-built images are currently available for: **v1.28, v1.30, v1.32, v1.34, v1.35**.
+Pre-built images are currently available for: **v1.34, v1.35, v1.37**.
 
 ## License
 

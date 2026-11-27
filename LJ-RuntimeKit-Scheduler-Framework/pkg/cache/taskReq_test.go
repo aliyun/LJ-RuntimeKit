@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 func TestStandardTaskReq_Clone(t *testing.T) {
@@ -36,9 +37,8 @@ func TestStandardTaskReq_Clone(t *testing.T) {
 	}
 
 	clonedStateData := original.Clone()
-	cloned, ok := clonedStateData.(*StandardTaskReq)
-	assert.True(t, ok, "Clone() should return *StandardTaskReq")
-	assert.NotNil(t, cloned)
+	cloned, ok := clonedStateData.(StandardTaskReq)
+	assert.True(t, ok, "Clone() must return the value type StandardTaskReq, matching what PreFilter writes and GetPreFilterStateData asserts on")
 
 	// Verify primitive fields
 	assert.Equal(t, original.Vmem, cloned.Vmem)
@@ -59,6 +59,46 @@ func TestStandardTaskReq_Clone(t *testing.T) {
 	emptyReq := StandardTaskReq{
 		AoaReplicas: nil,
 	}
-	emptyCloned := emptyReq.Clone().(*StandardTaskReq)
+	emptyCloned := emptyReq.Clone().(StandardTaskReq)
 	assert.Empty(t, emptyCloned.AoaReplicas)
+}
+
+// TestStandardTaskReq_CloneSurvivesCycleStateClone guards the preemption path.
+// DefaultPreemption clones the CycleState once per candidate node and every entry
+// goes through StateData.Clone() before Filter is re-run; GetPreFilterStateData
+// must still read the request back out of that cloned state. When Clone() returned
+// a pointer this failed with "can not convert to standardTaskReq", aborting all
+// preemption so business Pods could never evict ActiveMonitoring detection Pods.
+func TestStandardTaskReq_CloneSurvivesCycleStateClone(t *testing.T) {
+	// Mirrors a whole-card business Pod request as parsed by PreFilter.
+	req := StandardTaskReq{VReplicas: 1, NormalGpuReqCnt: 1}
+
+	state := framework.NewCycleState()
+	state.Write(VStandardTaskReqStateKey, req)
+	state.Write(ClusterDevicesStateKey, make(AvailableClusterDevices))
+	state.Write(ClusterMigDeviceStateKey, make(ClusterNodeMigDevices))
+
+	// Exactly what preemption.go does before SelectVictimsOnNode.
+	stateCopy := state.Clone()
+
+	clusterDevices, migDevices, clonedReq, err := GetPreFilterStateData(stateCopy)
+	// Bail out instead of dereferencing a nil request, so a regression surfaces the
+	// real conversion error rather than a nil-pointer panic.
+	if !assert.NoError(t, err, "GetPreFilterStateData must succeed on a cloned CycleState") {
+		return
+	}
+	if !assert.NotNil(t, clonedReq) {
+		return
+	}
+	assert.Equal(t, req.VReplicas, clonedReq.VReplicas)
+	assert.Equal(t, req.NormalGpuReqCnt, clonedReq.NormalGpuReqCnt)
+	assert.NotNil(t, clusterDevices)
+	assert.NotNil(t, migDevices)
+
+	// The un-cloned state must keep working as well.
+	_, _, origReq, err := GetPreFilterStateData(state)
+	if !assert.NoError(t, err) {
+		return
+	}
+	assert.Equal(t, req.NormalGpuReqCnt, origReq.NormalGpuReqCnt)
 }

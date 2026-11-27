@@ -20,10 +20,14 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"testing"
 
+	xpugrpc "github.com/lj-runtimekit/device-plugin/internal/grpc"
 	"github.com/lj-runtimekit/device-plugin/internal/utils"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,7 +83,7 @@ func TestAllocateRecordsCheckpoint(t *testing.T) {
 	}
 	req := &pluginapi.AllocateRequest{
 		ContainerRequests: []*pluginapi.ContainerAllocateRequest{
-			{DevicesIDs: []string{"COMP-0-_0", "COMP-0-_1"}},
+			{DevicesIds: []string{"COMP-0-_0", "COMP-0-_1"}},
 		},
 	}
 
@@ -151,7 +155,7 @@ func TestPreStartContainerIdempotentSkip(t *testing.T) {
 		Status:       utils.CheckpointStatusDone,
 	}))
 	resp, err := dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-0-_0"},
+		DevicesIds: []string{"COMP-0-_0"},
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -164,7 +168,7 @@ func TestPreStartContainerIdempotentSkip(t *testing.T) {
 		Status:       utils.CheckpointStatusPreStart,
 	}))
 	resp, err = dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-1-_0"},
+		DevicesIds: []string{"COMP-1-_0"},
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -195,7 +199,7 @@ func TestPreStartContainerRollbackOnFailure(t *testing.T) {
 
 	// first invocation fails while reading the kubelet checkpoint
 	_, err := dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-2-_0"},
+		DevicesIds: []string{"COMP-2-_0"},
 	})
 	assert.Error(t, err)
 
@@ -207,7 +211,7 @@ func TestPreStartContainerRollbackOnFailure(t *testing.T) {
 	// the retry must win the claim again (still fails on the missing kubelet
 	// checkpoint, proving it was not skipped by the idempotency guard)
 	_, err = dp.PreStartContainer(context.Background(), &pluginapi.PreStartContainerRequest{
-		DevicesIDs: []string{"COMP-2-_0"},
+		DevicesIds: []string{"COMP-2-_0"},
 	})
 	assert.Error(t, err)
 	record, err = utils.FindRecordByDeviceIDs(ResourceCore, []string{"COMP-2-_0"})
@@ -262,6 +266,162 @@ func TestAssignedFlagFor(t *testing.T) {
 				pod = corePod(tc.core)
 			}
 			assert.Equal(t, tc.expected, dp.assignedFlagFor(pod))
+		})
+	}
+}
+
+// TestSliceExtenderFor verifies the dual-mode gpu-slice contract: a pod with
+// rt_mig_enable=true forwards the MIG topology the scheduler resolved into
+// its annotations, while a pod without the label is an MPS slice request and
+// must carry no Mig* extender at all.
+func TestSliceExtenderFor(t *testing.T) {
+	migPod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      "mig-pod",
+		Namespace: "default",
+		Labels:    map[string]string{utils.LabelMigEnable: "true"},
+		Annotations: map[string]string{
+			utils.AnnotationMigDeviceCIMask:  "3",
+			utils.AnnotationMigTopologyStart: "1",
+			utils.AnnotationMigTopologySize:  "2",
+			utils.AnnotationMigDeviceType:    string(utils.TypeMigGi),
+		},
+	}}
+	extender, err := sliceExtenderFor(migPod)
+	assert.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		utils.AllocateMigMask:  "3",
+		utils.AllocateMigType:  strconv.Itoa(utils.MigType2Mode(utils.TypeMigGi)),
+		utils.AllocateMigSize:  "2",
+		utils.AllocateMigStart: "1",
+	}, extender)
+
+	// without the label the same gpu-slice request means MPS compute slices:
+	// xdm only books the capacity, so no Mig* key may be forwarded
+	mpsPod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "mps-pod", Namespace: "default"}}
+	extender, err = sliceExtenderFor(mpsPod)
+	assert.NoError(t, err)
+	assert.Empty(t, extender)
+
+	// a MIG pod missing the topology annotations must fail loudly instead of
+	// silently degrading into an MPS allocation
+	incompletePod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      "mig-pod-incomplete",
+		Namespace: "default",
+		Labels:    map[string]string{utils.LabelMigEnable: "true"},
+	}}
+	_, err = sliceExtenderFor(incompletePod)
+	assert.Error(t, err)
+}
+
+// TestSliceFactorFor 验证 Factor 由 MIG 模式与设备实际携带的 Slice 共同决定。
+func TestSliceFactorFor(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		migLabel   string
+		device     *xpugrpc.AllocatedDevices
+		wantFactor bool
+	}{
+		{name: "MIG 单 slice 设置 60", migLabel: "true", device: &xpugrpc.AllocatedDevices{Slice: wrapperspb.UInt32(1)}, wantFactor: true},
+		{name: "MIG 多 slice 仍设置 60", migLabel: "true", device: &xpugrpc.AllocatedDevices{Slice: wrapperspb.UInt32(4)}, wantFactor: true},
+		{name: "MIG 仅传 minor 不设置", migLabel: "true", device: &xpugrpc.AllocatedDevices{Minor: wrapperspb.UInt32(0)}},
+		{name: "MIG core 维度不设置", migLabel: "true", device: &xpugrpc.AllocatedDevices{Core: wrapperspb.UInt32(50)}},
+		{name: "MIG memory 维度不设置", migLabel: "true", device: &xpugrpc.AllocatedDevices{Memory: wrapperspb.UInt32(1024)}},
+		{name: "MIG possibility 维度不设置", migLabel: "true", device: &xpugrpc.AllocatedDevices{Possibility: wrapperspb.UInt32(1)}},
+		{name: "无 MIG 标签的 MPS slice 不设置", device: &xpugrpc.AllocatedDevices{Slice: wrapperspb.UInt32(1)}},
+		{name: "关闭 MIG 的 MPS slice 不设置", migLabel: "false", device: &xpugrpc.AllocatedDevices{Slice: wrapperspb.UInt32(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &v1.Pod{Spec: v1.PodSpec{Containers: []v1.Container{{
+				Resources: v1.ResourceRequirements{Limits: v1.ResourceList{
+					v1.ResourceName(utils.ResourceSlice): resource.MustParse("1"),
+				}},
+			}}}}
+			if tc.migLabel != "" {
+				pod.Labels = map[string]string{utils.LabelMigEnable: tc.migLabel}
+			}
+			// 即使 Pod 申请了 slice，仅传 minor 或其他维度的设备也不能填 Factor。
+			tc.device.Factor = sliceFactorFor(pod, tc.device)
+			if tc.wantFactor {
+				if assert.NotNil(t, tc.device.Factor) {
+					assert.Equal(t, uint32(60), tc.device.Factor.Value)
+				}
+			} else {
+				assert.Nil(t, tc.device.Factor)
+			}
+
+			// 验证协议编码后仍区分未设置 Factor 和显式设置为 60。
+			data, err := proto.Marshal(tc.device)
+			if !assert.NoError(t, err) {
+				return
+			}
+			var decoded xpugrpc.AllocatedDevices
+			if !assert.NoError(t, proto.Unmarshal(data, &decoded)) {
+				return
+			}
+			assert.True(t, proto.Equal(tc.device, &decoded))
+		})
+	}
+}
+
+// TestPcieSwitchIndexFor 验证整卡资源透传 RDMA 索引，共享 core 和其他维度不透传。
+func TestPcieSwitchIndexFor(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resourceName string
+		core         string
+		pcieIndex    string
+		want         string
+	}{
+		{name: "aliyun GPU 透传索引", resourceName: utils.ResourceGPU, pcieIndex: "0,1", want: "0,1"},
+		{name: "nvidia GPU 透传索引", resourceName: utils.ResourceNvidia, pcieIndex: "1", want: "1"},
+		{name: "core 单卡透传索引", resourceName: utils.ResourceCore, core: "100", pcieIndex: "0", want: "0"},
+		{name: "core 多卡透传索引", resourceName: utils.ResourceCore, core: "200", pcieIndex: " 0, 1 ", want: "0,1"},
+		{name: "非整倍数沿用整卡判定", resourceName: utils.ResourceCore, core: "150", pcieIndex: "1", want: "1"},
+		{name: "共享 core 不透传", resourceName: utils.ResourceCore, core: "50", pcieIndex: "0"},
+		{name: "core 未达整卡阈值不透传", resourceName: utils.ResourceCore, core: "99", pcieIndex: "0"},
+		{name: "无 core 请求不透传", resourceName: utils.ResourceCore, pcieIndex: "0"},
+		{name: "core 整卡无索引不透传", resourceName: utils.ResourceCore, core: "100"},
+		{name: "core 整卡空白索引不透传", resourceName: utils.ResourceCore, core: "100", pcieIndex: " , "},
+		{name: "core 整卡非法索引不透传", resourceName: utils.ResourceCore, core: "100", pcieIndex: "invalid"},
+		{name: "core 整卡过滤非法索引", resourceName: utils.ResourceCore, core: "100", pcieIndex: "0,invalid, 1", want: "0,1"},
+		{name: "memory 维度不因整卡 core 透传", resourceName: utils.ResourceMemory, core: "100", pcieIndex: "0"},
+		{name: "slice 维度不因整卡 core 透传", resourceName: utils.ResourceSlice, core: "100", pcieIndex: "0"},
+		{name: "possibility 维度不因整卡 core 透传", resourceName: utils.ResourcePossibility, core: "100", pcieIndex: "0"},
+		{name: "RDMA token 维度不透传", resourceName: utils.ResourceRDMA, core: "100", pcieIndex: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &v1.Pod{}
+			if tc.pcieIndex != "" {
+				pod.Annotations = map[string]string{utils.AnnotationPcieSwitchIndex: tc.pcieIndex}
+			}
+			if tc.core != "" {
+				pod.Spec.Containers = []v1.Container{{
+					Resources: v1.ResourceRequirements{Limits: v1.ResourceList{
+						v1.ResourceName(utils.ResourceCore): resource.MustParse(tc.core),
+					}},
+				}}
+			}
+			dp := &XpuDevicePlugin{ResourceName: tc.resourceName}
+			assert.Equal(t, tc.want, dp.pcieSwitchIndexFor(pod))
+		})
+	}
+}
+
+// TestFeatureGatesFor verifies profiling is enabled only by
+// rt-profiling-enable=true.
+func TestFeatureGatesFor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+		want   map[int32]bool
+	}{
+		{name: "label true enables profiling", labels: map[string]string{utils.LabelProfilingEnable: "true"}, want: map[int32]bool{int32(xpugrpc.FeatureFlag_TroubleShooting): true}},
+		{name: "label false leaves gates empty", labels: map[string]string{utils.LabelProfilingEnable: "false"}},
+		{name: "no label leaves gates empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: tc.labels}}
+			assert.Equal(t, tc.want, featureGatesFor(pod))
 		})
 	}
 }

@@ -17,8 +17,9 @@ limitations under the License.
 package standard
 
 import (
-	"sort"
 	"testing"
+
+	"github.com/lj-runtimekit/scheduler/pkg/utils"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -75,15 +76,15 @@ func TestStaffGPU_GetResourceRatio(t *testing.T) {
 	}
 }
 
-func TestResourceList_Sort(t *testing.T) {
-	list := resourceList{
+func TestSortStaffGPUs_Binpack(t *testing.T) {
+	list := []staffGPU{
 		{devId: 0, total: &gpuResources{100, 100}, available: &gpuResources{80, 80}}, // ratio = 80
 		{devId: 1, total: &gpuResources{100, 100}, available: &gpuResources{20, 20}}, // ratio = 20
 		{devId: 2, total: &gpuResources{100, 100}, available: &gpuResources{50, 50}}, // ratio = 50
 	}
 
-	// Sort in ascending order of resource ratio (most free first)
-	sort.Sort(list)
+	// Binpack keeps the least free device first.
+	sortStaffGPUs(list, utils.ScheduleStrategyBinpack)
 
 	expectedOrder := []int{1, 2, 0} // ratios: 20, 50, 80
 	for i, expectedID := range expectedOrder {
@@ -91,18 +92,41 @@ func TestResourceList_Sort(t *testing.T) {
 	}
 }
 
-func TestReverseResourceList_Sort(t *testing.T) {
-	list := reverseResourceList{
+func TestSortStaffGPUs_Spread(t *testing.T) {
+	list := []staffGPU{
 		{devId: 0, total: &gpuResources{100, 100}, available: &gpuResources{80, 80}}, // ratio = 80
 		{devId: 1, total: &gpuResources{100, 100}, available: &gpuResources{20, 20}}, // ratio = 20
 		{devId: 2, total: &gpuResources{100, 100}, available: &gpuResources{50, 50}}, // ratio = 50
 	}
 
-	// Sort in descending order of resource ratio (least free first)
-	sort.Sort(list)
+	// Spread keeps the most free device first.
+	sortStaffGPUs(list, utils.ScheduleStrategySpread)
 
 	expectedOrder := []int{0, 2, 1} // ratios: 80, 50, 20
 	for i, expectedID := range expectedOrder {
 		assert.Equal(t, expectedID, list[i].devId)
 	}
+}
+
+// TestSortStaffGPUs_MPSFollowsStrategy verifies that devices able to run MPS tasks
+// are ordered by the node binpack/spread strategy only, without any extra preference
+// for the devices that already run MPS tasks.
+func TestSortStaffGPUs_MPSFollowsStrategy(t *testing.T) {
+	newCandidates := func() []staffGPU {
+		return []staffGPU{
+			{devId: 0, total: &gpuResources{100, 100}, available: &gpuResources{80, 80}}, // idle card
+			{devId: 1, total: &gpuResources{100, 100}, available: &gpuResources{20, 20}}, // running MPS
+			{devId: 2, total: &gpuResources{100, 100}, available: &gpuResources{50, 50}}, // running MPS
+		}
+	}
+
+	// Binpack fills the least free device first, which is the running MPS card here.
+	binpackList := newCandidates()
+	sortStaffGPUs(binpackList, utils.ScheduleStrategyBinpack)
+	assert.Equal(t, []int{1, 2, 0}, []int{binpackList[0].devId, binpackList[1].devId, binpackList[2].devId})
+
+	// Spread fills the freest device first, which is the idle card here.
+	spreadList := newCandidates()
+	sortStaffGPUs(spreadList, utils.ScheduleStrategySpread)
+	assert.Equal(t, []int{0, 2, 1}, []int{spreadList[0].devId, spreadList[1].devId, spreadList[2].devId})
 }

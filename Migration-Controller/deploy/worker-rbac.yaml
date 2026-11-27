@@ -1,0 +1,137 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lj-runtimekit-migration-worker
+rules:
+  - apiGroups:
+      - migration.io
+    resources:
+      - containerstatemigrationjobrequests
+    verbs:
+      - delete
+      - update
+      - get
+      - list
+      - watch
+      - patch
+  - apiGroups:
+      - migration.io
+    resources:
+      - containerstatemigrationjobrequests/status
+    verbs:
+      - patch
+      - update
+  # When the dragonfly storage backend names a PreheatJob, the worker needs to
+  # read it for remoteURL and credentials; in PVC mode without preheat
+  # coordinates, the worker needs to read the PVC/PV to derive the EFC relative
+  # path.
+  - apiGroups:
+      - migration.io
+    resources:
+      - preheatjobs
+    verbs:
+      - get
+      - list
+      - watch
+  # PVC + dragonfly preheat path: the restore worker derives the resident
+  # Service name from (pvcNamespace, pvcName, pvcPath) and reads its ClusterIP
+  # to compose the preheat URL (services get); when doubling as the origin
+  # station it creates/updates its own EndpointSlice registered into that
+  # Service (endpointslices).
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - get
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumes
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - delete
+      - update
+      - get
+      - list
+      - watch
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/status
+    verbs:
+      - patch
+      - update
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: lj-runtimekit-migration-worker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lj-runtimekit-migration-worker
+subjects:
+  - kind: ServiceAccount
+    name: lj-runtimekit-migration-worker
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lj-runtimekit-migration-worker
+  namespace: kube-system
+---
+# The task-level worker is created in the PVC's namespace (default); a
+# same-name SA must also be created there and bound to the same ClusterRole:
+# PVC mode needs to read PVC/PV to derive the EFC relative path, read the
+# Service for the ClusterIP, and read/write its own EndpointSlice doubling as
+# the preheat origin station.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lj-runtimekit-migration-worker
+  namespace: default
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: lj-runtimekit-migration-worker-default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lj-runtimekit-migration-worker
+subjects:
+  - kind: ServiceAccount
+    name: lj-runtimekit-migration-worker
+    namespace: default
+

@@ -233,6 +233,63 @@ func TestExtractMigRealDeviceID(t *testing.T) {
 	}
 }
 
+// TestGenerateFakeMpsID tests GenerateFakeMpsID function
+func TestGenerateFakeMpsID(t *testing.T) {
+	assert.Equal(t, "MPS-device123-_-5", GenerateFakeMpsID("device123", 5))
+}
+
+// TestSliceFakeDeviceIDs verifies the dual-mode slice reporting: MIG ids when
+// xdm enabled MIG on the card, MPS ids when the card only advertises MPS
+// compute slices, and no device when neither count is reported.
+func TestSliceFakeDeviceIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		extender map[string]string
+		expected []string
+	}{
+		{
+			name:     "mig enabled reports mig slice ids",
+			extender: map[string]string{MigEnableKey: MigEnableValue, MigSliceKey: "2"},
+			expected: []string{"MIG-uuid-_-2_0", "MIG-uuid-_-2_1"},
+		},
+		{
+			name:     "mps takes precedence over mig",
+			extender: map[string]string{MigEnableKey: MigEnableValue, MigSliceKey: "2", MpsSliceKey: "3"},
+			expected: []string{"MPS-uuid-_-0", "MPS-uuid-_-1", "MPS-uuid-_-2"},
+		},
+		{
+			name:     "no mig advertises mps slice ids",
+			extender: map[string]string{MpsSliceKey: "3"},
+			expected: []string{"MPS-uuid-_-0", "MPS-uuid-_-1", "MPS-uuid-_-2"},
+		},
+		{
+			name:     "neither count reports nothing",
+			extender: map[string]string{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids, err := SliceFakeDeviceIDs(&xpugrpc.Device{Id: "uuid", ExtenderResources: tc.extender})
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expected, ids)
+		})
+	}
+
+	// a malformed count must surface as an error instead of reporting silently
+	_, err := SliceFakeDeviceIDs(&xpugrpc.Device{Id: "uuid", ExtenderResources: map[string]string{MpsSliceKey: "x"}})
+	assert.Error(t, err)
+}
+
+// TestGetDeviceMinorFromMpsID verifies an MPS fake id resolves back to the
+// real card minor, exactly like the MIG ids do.
+func TestGetDeviceMinorFromMpsID(t *testing.T) {
+	deviceMeta := NewDeviceMeta()
+	deviceMeta.Put(3, &xpugrpc.Device{Id: "uuid"})
+
+	minor, err := GetDeviceMinorFromID(deviceMeta, GenerateFakeMpsID("uuid", 5))
+	assert.NoError(t, err)
+	assert.Equal(t, 3, minor)
+}
+
 // TestGenerateFakeMigID tests GenerateFakeMigID function
 func TestGenerateFakeMigID(t *testing.T) {
 	realID := "device123"

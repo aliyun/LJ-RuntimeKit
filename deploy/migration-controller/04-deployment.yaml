@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lj-runtimekit-migration-controller
+  namespace: kube-system
+  labels:
+    component: lj-runtimekit-migration-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: lj-runtimekit-migration-controller
+  template:
+    metadata:
+      labels:
+        component: lj-runtimekit-migration-controller
+    spec:
+      serviceAccountName: lj-runtimekit-migration-controller
+      terminationGracePeriodSeconds: 30
+      containers:
+        - command:
+            - /bin/migration-controller
+          args:
+            - -v=4
+            - --logtostderr=true
+            - --rpc-timeout=2m
+            - --enable-preheat-job
+            - --leader-election=true
+          image: lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-migration-controller:v1.14.0-k8s1.34
+          imagePullPolicy: IfNotPresent
+          name: migration-controller
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: healthz
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists

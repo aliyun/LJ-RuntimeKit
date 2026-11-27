@@ -1,0 +1,43 @@
+# ActiveMonitoring 自定义资源示例
+#
+# ActiveMonitoring 用于声明"逐卡 GPU 检测（SDC）"策略。控制器据此：
+#   1. 枚举目标节点上的每张 GPU（minor），生成检测队列（status.queue）
+#   2. 逐卡创建"钉定"检测 Pod（nodeAffinity 锁节点 + rt-diag-target-minor 注解锁卡）
+#   3. watch Pod 生命周期，解析 terminationMessage 回填 result，被抢占/失败则重试重建
+#
+# 前置条件：
+#   - 集群已部署 ActiveMonitoring CRD（runtimekit.io/v1alpha1）
+#   - 已启用 activemonitoring 控制器（--enable-controllers=* 或显式包含 activemonitoring）
+#   - 检测 Pod 走 lj-runtimekit-scheduler 调度；未部署 Scheduler 钉定插件时，
+#     检测 Pod 会保持 Pending
+---
+apiVersion: runtimekit.io/v1alpha1
+kind: ActiveMonitoring
+metadata:
+  name: burn-test-20261021
+  namespace: default
+spec:
+  # allLjRuntimeKitEnabled —— true 时忽略 affinity，自动选择所有带
+  #   lj_runtimekit_enable="true" 标签且有 GPU 的节点
+  allLjRuntimeKitEnabled: false
+
+  # affinity —— 标准 K8s affinity，仅 nodeAffinity 生效，用于筛选目标节点
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values: ["gpu-node-01", "gpu-node-02"]
+
+  schedule:
+    # interval —— 每个 cycle 的触发间隔
+    interval: "4h"
+    # roundsPerCycle —— 每 cycle 对每张卡执行的轮次（默认 1）
+    roundsPerCycle: 1
+    # totalCycles —— 总 cycle 数，0 表示无限循环
+    totalCycles: 0
+
+  # concurrency —— 并发控制数
+  concurrency: 0

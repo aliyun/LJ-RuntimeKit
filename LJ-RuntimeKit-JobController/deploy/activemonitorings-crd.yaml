@@ -1,0 +1,191 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: activemonitorings.runtimekit.io
+spec:
+  group: runtimekit.io
+  names:
+    kind: ActiveMonitoring
+    listKind: ActiveMonitoringList
+    plural: activemonitorings
+    singular: activemonitoring
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Total
+      type: integer
+      jsonPath: .status.totalTasks
+    - name: Completed
+      type: integer
+      jsonPath: .status.completedTasks
+    - name: Failed
+      type: integer
+      jsonPath: .status.failedTasks
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    schema:
+      openAPIV3Schema:
+        description: ActiveMonitoring declares a per-card GPU (SDC) detection policy. The
+          controller materialises a queue of pinned detection Pods (one per target
+          GPU minor), watches their lifecycle, and reports aggregated results on
+          status.
+        type: object
+        x-kubernetes-validations:
+        - rule: >-
+            !has(oldSelf.status) || !has(oldSelf.status.queue) || size(oldSelf.status.queue) == 0 ||
+            ((has(self.spec) && has(self.spec.schedule)) == (has(oldSelf.spec) && has(oldSelf.spec.schedule)) &&
+            (!(has(oldSelf.spec) && has(oldSelf.spec.schedule)) || self.spec.schedule == oldSelf.spec.schedule))
+          message: "The schedule cannot be modified after the test queue has been initialized; please create a new ActiveMonitoring."
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            type: object
+            properties:
+              allLjRuntimeKitEnabled:
+                type: boolean
+              affinity:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              schedule:
+                description: Cycle and round timing.
+                type: object
+                properties:
+                  interval:
+                    type: string
+                  roundsPerCycle:
+                    description: Number of runs each task performs per cycle (default 1).
+                    type: integer
+                    minimum: 0
+                  totalCycles:
+                    type: integer
+                    minimum: 0
+              concurrency:
+                description: Cap on detection Pods that effectively occupy a slot
+                  (Running + non-timed-out Pending). 0 means unlimited.
+                type: integer
+                minimum: 0
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum:
+                - Pending
+                - Running
+                - Completed
+                - Failed
+              totalTasks:
+                type: integer
+              completedTasks:
+                type: integer
+              runningTasks:
+                type: integer
+              pendingTasks:
+                type: integer
+              preemptedTasks:
+                type: integer
+              failedTasks:
+                type: integer
+              queue:
+                type: array
+                items:
+                  description: TaskStatus is the per-card detection task state.
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    nodeName:
+                      type: string
+                    gpuMinor:
+                      type: integer
+                    currentCycle:
+                      type: integer
+                      minimum: 1
+                    state:
+                      type: string
+                      enum:
+                      - Pending
+                      - Running
+                      - Preempted
+                      - Completed
+                      - Failed
+                    podName:
+                      type: string
+                    attempts:
+                      type: integer
+                      minimum: 0
+                      maximum: 3
+                    completedRounds:
+                      type: integer
+                    result:
+                      type: object
+                      properties:
+                        passed:
+                          type: boolean
+                        duration:
+                          type: integer
+                          format: int64
+                        errors:
+                          type: array
+                          items:
+                            type: string
+                    startTime:
+                      type: string
+                      format: date-time
+                    endTime:
+                      type: string
+                      format: date-time
+                    lastPreemptTime:
+                      type: string
+                      format: date-time
+                  required:
+                  - id
+                  - nodeName
+                  - gpuMinor
+                  - state
+              conditions:
+                type: array
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                    observedGeneration:
+                      type: integer
+                      format: int64
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+                  required:
+                  - type
+                  - status
+                  - lastTransitionTime
+                  - reason
+                  - message
+    subresources:
+      status: {}

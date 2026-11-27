@@ -25,7 +25,6 @@ import (
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	"k8s.io/klog/v2"
-	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
 
 func (dm *DeviceManager) checkHealth(ctx context.Context, unhealthy chan<- *plugin.DeviceBase) error {
@@ -51,13 +50,7 @@ func (dm *DeviceManager) checkHealth(ctx context.Context, unhealthy chan<- *plug
 		_ = eventSet.Free()
 	}()
 
-	deviceCache := make([]*plugin.DeviceBase, 0, len(dm.annotationDevices.Devices))
-	for _, device := range dm.annotationDevices.Devices {
-		deviceCache = append(deviceCache, &plugin.DeviceBase{
-			UUID:  device.UUID,
-			Minor: device.Minor,
-		})
-	}
+	deviceCache := dm.snapshotDeviceBases()
 
 	const maxRetries = 5
 	retryInterval := 3 * time.Second
@@ -146,8 +139,12 @@ func (dm *DeviceManager) checkHealth(ctx context.Context, unhealthy chan<- *plug
 	}
 }
 
-func (dm *DeviceManager) DeviceHealthCheck() {
+// DeviceHealthCheck runs the health check of one plugin run until stop is
+// closed. stop is the channel of that run, passed in instead of read from
+// dm.stopChan, which Stop replaces for the next run.
+func (dm *DeviceManager) DeviceHealthCheck(stop <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	unhealthy := make(chan *plugin.DeviceBase)
 
 	go func() {
@@ -157,24 +154,76 @@ func (dm *DeviceManager) DeviceHealthCheck() {
 		}
 	}()
 
+	dm.watchUnhealthy(stop, unhealthy)
+}
+
+// watchUnhealthy applies unhealthy device reports until stop is closed.
+func (dm *DeviceManager) watchUnhealthy(stop <-chan struct{}, unhealthy <-chan *plugin.DeviceBase) {
 	for {
 		select {
-		case <-dm.stopChan:
-			cancel()
+		case <-stop:
 			return
 		case device := <-unhealthy:
-			if gpuDevice, ok := dm.annotationDevices.Devices[int(device.Minor)]; ok {
-				gpuDevice.Health = pluginapi.Unhealthy
-			}
+			// only the device annotation is republished: a health report says
+			// nothing about the topology, so the pcie tree and the node labels stay
+			// exactly as the topology worker published them
+			dm.markUnhealthy(int(device.Minor))
 
 			klog.Infof("device %d %s become unhealthy", device.Minor, device.UUID)
-			if err := dm.addNodeAnnotation(dm.annotationDevices); err != nil {
-				klog.Errorf("failed to add node annotation: %v", err)
+			if err := dm.patchDeviceAnnotation(); err != nil {
+				klog.Errorf("failed to patch the device annotation: %v", err)
 			}
 
-			for _, plugin := range dm.plugins {
-				plugin.Unhealthy(device)
+			for _, p := range dm.snapshotPlugins() {
+				p.Unhealthy(device)
 			}
 		}
 	}
+}
+
+// markUnhealthy records a device NVML reported as failed. The xdm snapshot keeps
+// reporting it as healthy, so the report is kept aside and merged when the node
+// annotation is built.
+func (dm *DeviceManager) markUnhealthy(minor int) {
+	dm.unhealthyMu.Lock()
+	defer dm.unhealthyMu.Unlock()
+
+	if dm.unhealthyDevices == nil {
+		dm.unhealthyDevices = make(map[int]bool)
+	}
+	dm.unhealthyDevices[minor] = true
+}
+
+// unhealthySnapshot returns the failed devices recorded so far.
+func (dm *DeviceManager) unhealthySnapshot() map[int]bool {
+	dm.unhealthyMu.Lock()
+	defer dm.unhealthyMu.Unlock()
+
+	unhealthy := make(map[int]bool, len(dm.unhealthyDevices))
+	for minor := range dm.unhealthyDevices {
+		unhealthy[minor] = true
+	}
+
+	return unhealthy
+}
+
+// snapshotDeviceBases lists the devices of the xdm snapshot in the form the
+// health check needs. It reads the cache instead of the annotation mirror, which
+// the topology worker rebuilds asynchronously.
+func (dm *DeviceManager) snapshotDeviceBases() []*plugin.DeviceBase {
+	dm.deviceMeta.RLock()
+	defer dm.deviceMeta.RUnlock()
+
+	devices := make([]*plugin.DeviceBase, 0, len(dm.deviceMeta.Cache))
+	for minor, d := range dm.deviceMeta.Cache {
+		if d == nil {
+			continue
+		}
+		devices = append(devices, &plugin.DeviceBase{
+			UUID:  d.Id,
+			Minor: uint(minor),
+		})
+	}
+
+	return devices
 }

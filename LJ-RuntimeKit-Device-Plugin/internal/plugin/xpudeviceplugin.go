@@ -22,12 +22,14 @@ import (
 	"net"
 	"os"
 	"path"
-	"strconv"
+	"sync"
 	"time"
 
+	xpugrpc "github.com/lj-runtimekit/device-plugin/internal/grpc"
 	"github.com/lj-runtimekit/device-plugin/internal/utils"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
@@ -41,6 +43,8 @@ type DeviceBase struct {
 var _ PluginInterface = &XpuDevicePlugin{}
 
 type XpuDevicePlugin struct {
+	pluginapi.UnimplementedDevicePluginServer
+
 	ResourceName string
 	Devs         map[string]*pluginapi.Device
 	Socket       string
@@ -49,12 +53,17 @@ type XpuDevicePlugin struct {
 
 	deviceMeta *utils.DeviceMeta
 
-	K8sClient *kubernetes.Clientset
+	K8sClient kubernetes.Interface
 	stop      chan struct{}
-	health    chan *pluginapi.Device
+	// health carries a wake up signal to the ListAndWatch goroutine, the
+	// device list itself is read under devsMu
+	health chan struct{}
+	// devsMu guards Devs: it is written by initialize / Unhealthy / SetHealth
+	// and read by the ListAndWatch goroutine
+	devsMu sync.RWMutex
 }
 
-func DevicePluginForResource(resourceName, socketPath, assignedFlag string, deviceMeta *utils.DeviceMeta, client *kubernetes.Clientset) (PluginInterface, error) {
+func DevicePluginForResource(resourceName, socketPath, assignedFlag string, deviceMeta *utils.DeviceMeta, client kubernetes.Interface) (PluginInterface, error) {
 	return &XpuDevicePlugin{
 		ResourceName: resourceName,
 		Devs:         make(map[string]*pluginapi.Device),
@@ -64,8 +73,22 @@ func DevicePluginForResource(resourceName, socketPath, assignedFlag string, devi
 		K8sClient:    client,
 
 		stop:   make(chan struct{}),
-		health: make(chan *pluginapi.Device),
+		health: make(chan struct{}, 1),
 	}, nil
+}
+
+// sliceDeviceIDs resolves the slice fake device ids of one card. gpu-slice is
+// a dual-mode resource ("MPS-" ids when xdm advertises MPS compute slices, i.e.
+// the card creates no MIG instance; "MIG-" ids otherwise); the resolution is
+// shared with the health path so reporting and unhealth marking never drift
+// apart.
+func (dp *XpuDevicePlugin) sliceDeviceIDs(dev *xpugrpc.Device) []string {
+	ids, err := utils.SliceFakeDeviceIDs(dev)
+	if err != nil {
+		klog.Errorf("dp %s failed to resolve slice devices: %v", dp.ResourceName, err)
+		return nil
+	}
+	return ids
 }
 
 func (dp *XpuDevicePlugin) initialize() {
@@ -80,7 +103,7 @@ func (dp *XpuDevicePlugin) initialize() {
 				Health: pluginapi.Healthy,
 			}
 		}
-		dp.Devs = devs
+		dp.setDevices(devs)
 		return
 	}
 
@@ -110,23 +133,10 @@ func (dp *XpuDevicePlugin) initialize() {
 				}
 			}
 		case utils.ResourceSlice:
-			migEnable, ok := dev.ExtenderResources[utils.MigEnableKey]
-			if ok && migEnable == utils.MigEnableValue {
-				slice, ok := dev.ExtenderResources[utils.MigSliceKey]
-				if ok {
-					sliceNum, err := strconv.Atoi(slice)
-					if err != nil {
-						klog.Errorf("dp %s failed to parse idx %d migEnable value %s", dp.ResourceName, id, slice)
-						continue
-					}
-
-					for i := 0; i < sliceNum; i++ {
-						fakeMigID := utils.GenerateFakeMigID(dev.Id, uint(sliceNum), uint(i))
-						devs[fakeMigID] = &pluginapi.Device{
-							ID:     fakeMigID,
-							Health: dev.Health,
-						}
-					}
+			for _, fakeSliceID := range dp.sliceDeviceIDs(dev) {
+				devs[fakeSliceID] = &pluginapi.Device{
+					ID:     fakeSliceID,
+					Health: dev.Health,
 				}
 			}
 		case utils.ResourcePossibility:
@@ -144,7 +154,49 @@ func (dp *XpuDevicePlugin) initialize() {
 			}
 		}
 	}
+	dp.setDevices(devs)
+}
+
+// setDevices installs a freshly built device list.
+func (dp *XpuDevicePlugin) setDevices(devs map[string]*pluginapi.Device) {
+	dp.devsMu.Lock()
+	defer dp.devsMu.Unlock()
 	dp.Devs = devs
+}
+
+// SetHealth flips every device of this resource to the given health and wakes
+// up ListAndWatch, so kubelet recomputes the allocatable amount. Devices of an
+// unhealthy resource stay registered but no longer take part in scheduling,
+// which is how the topology sync withdraws the rdma resource without tearing
+// the plugin down.
+func (dp *XpuDevicePlugin) SetHealth(healthy bool) {
+	health := pluginapi.Unhealthy
+	if healthy {
+		health = pluginapi.Healthy
+	}
+
+	dp.devsMu.Lock()
+	for _, dev := range dp.Devs {
+		dev.Health = health
+	}
+	dp.devsMu.Unlock()
+
+	dp.notifyDevicesChanged()
+}
+
+// notifyDevicesChanged wakes the ListAndWatch goroutine. It never blocks: one
+// pending signal is enough because the goroutine sends the whole device list.
+func (dp *XpuDevicePlugin) notifyDevicesChanged() {
+	select {
+	case <-dp.stop:
+		return
+	default:
+	}
+
+	select {
+	case dp.health <- struct{}{}:
+	default:
+	}
 }
 
 func (dp *XpuDevicePlugin) Name() string {
@@ -158,8 +210,9 @@ func (dp *XpuDevicePlugin) Stop() error {
 
 	dp.server.Stop()
 	dp.server = nil
+	// health stays open on purpose: notifyDevicesChanged may run from the
+	// topology sync right after Stop and sending on a closed channel panics
 	close(dp.stop)
-	close(dp.health)
 
 	return dp.cleanup()
 }
@@ -196,6 +249,10 @@ func (dp *XpuDevicePlugin) Unhealthy(device *DeviceBase) {
 		return
 	}
 
+	// the ListAndWatch goroutine reads the list concurrently
+	dp.devsMu.Lock()
+	defer dp.devsMu.Unlock()
+
 	switch dp.ResourceName {
 	case utils.ResourceCore:
 		klog.Infof("unhealthy %s dev %v", dp.ResourceName, dev)
@@ -206,7 +263,7 @@ func (dp *XpuDevicePlugin) Unhealthy(device *DeviceBase) {
 				fakeDev.Health = pluginapi.Unhealthy
 			}
 			if i == uint(dev.TotalCore)-1 {
-				dp.health <- fakeDev
+				dp.notifyDevicesChanged()
 			}
 		}
 	case utils.ResourceMemory:
@@ -218,31 +275,19 @@ func (dp *XpuDevicePlugin) Unhealthy(device *DeviceBase) {
 				fakeDev.Health = pluginapi.Unhealthy
 			}
 			if i == utils.GetGPUMemory()-1 {
-				dp.health <- fakeDev
+				dp.notifyDevicesChanged()
 			}
 		}
 	case utils.ResourceSlice:
 		klog.Infof("unhealthy %s dev %v", dp.ResourceName, dev)
-		migEnable, ok := dev.ExtenderResources[utils.MigEnableKey]
-		if ok && migEnable == utils.MigEnableValue {
-			slice, ok := dev.ExtenderResources[utils.MigSliceKey]
+		sliceIDs := dp.sliceDeviceIDs(dev)
+		for i, fakeSliceID := range sliceIDs {
+			fakeDev, ok := dp.Devs[fakeSliceID]
 			if ok {
-				sliceNum, err := strconv.Atoi(slice)
-				if err != nil {
-					klog.Errorf("dp %s failed to parse idx %d migEnable value %s", dp.ResourceName, device.Minor, slice)
-					return
-				}
-
-				for i := 0; i < sliceNum; i++ {
-					fakeMigID := utils.GenerateFakeMigID(dev.Id, uint(sliceNum), uint(i))
-					fakeDev, ok := dp.Devs[fakeMigID]
-					if ok {
-						fakeDev.Health = pluginapi.Unhealthy
-					}
-					if i == sliceNum-1 {
-						dp.health <- fakeDev
-					}
-				}
+				fakeDev.Health = pluginapi.Unhealthy
+			}
+			if i == len(sliceIDs)-1 {
+				dp.notifyDevicesChanged()
 			}
 		}
 	case utils.ResourcePossibility:
@@ -254,7 +299,7 @@ func (dp *XpuDevicePlugin) Unhealthy(device *DeviceBase) {
 				fakeDev.Health = pluginapi.Unhealthy
 			}
 			if i == utils.DefaultResourcePossibility-1 {
-				dp.health <- fakeDev
+				dp.notifyDevicesChanged()
 			}
 		}
 	default:
@@ -262,7 +307,7 @@ func (dp *XpuDevicePlugin) Unhealthy(device *DeviceBase) {
 		fakeDev, ok := dp.Devs[dev.Id]
 		if ok {
 			fakeDev.Health = pluginapi.Unhealthy
-			dp.health <- fakeDev
+			dp.notifyDevicesChanged()
 		}
 	}
 
@@ -361,11 +406,23 @@ func (dp *XpuDevicePlugin) cleanup() error {
 	return nil
 }
 
+// GetPluginDevices returns a snapshot of the device list. ListAndWatch serialises
+// the returned slice outside of devsMu while SetHealth / Unhealthy rewrite the
+// health of the shared devices, so every device is cloned under the lock: handing
+// out the shared pointers would race with the health update and could send a list
+// that mixes the old and the new health.
 func (dp *XpuDevicePlugin) GetPluginDevices() []*pluginapi.Device {
-	var res []*pluginapi.Device
+	dp.devsMu.RLock()
+	defer dp.devsMu.RUnlock()
+
+	res := make([]*pluginapi.Device, 0, len(dp.Devs))
 	for _, device := range dp.Devs {
-		res = append(res, device)
+		if device == nil {
+			continue
+		}
+		res = append(res, proto.Clone(device).(*pluginapi.Device))
 	}
+
 	return res
 }
 
@@ -373,7 +430,9 @@ func (dp *XpuDevicePlugin) GetPluginDevices() []*pluginapi.Device {
 func (dp *XpuDevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
 	klog.Infof("starting ListAndWatch for %s", dp.ResourceName)
 
-	s.Send(&pluginapi.ListAndWatchResponse{Devices: dp.GetPluginDevices()})
+	if err := s.Send(&pluginapi.ListAndWatchResponse{Devices: dp.GetPluginDevices()}); err != nil {
+		return err
+	}
 
 	for {
 		select {
@@ -382,7 +441,10 @@ func (dp *XpuDevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePl
 		case <-dp.health:
 			// FIXME: there is no way to recover from the Unhealthy state.
 
-			s.Send(&pluginapi.ListAndWatchResponse{Devices: dp.GetPluginDevices()})
+			if err := s.Send(&pluginapi.ListAndWatchResponse{Devices: dp.GetPluginDevices()}); err != nil {
+				klog.Errorf("ListAndWatch for %s failed to send devices: %v", dp.ResourceName, err)
+				return err
+			}
 		}
 	}
 }

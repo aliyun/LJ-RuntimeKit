@@ -218,8 +218,10 @@ func IsNormalPodTask(pod *v1.Pod) bool {
 }
 
 // ResponseForTask returns true if the scheduler plugin is responsible for this pod's GPU scheduling.
+// MPS tasks are included because they may request slices only, without memory.
 func ResponseForTask(pod *v1.Pod) bool {
-	return IsStandardPodTask(pod) || IsNormalPodTask(pod) || IsMigPodTask(pod) || IsPublicMigPodTask(pod)
+	return IsStandardPodTask(pod) || IsNormalPodTask(pod) || IsMigPodTask(pod) ||
+		IsPublicMigPodTask(pod) || IsMpsPodTask(pod)
 }
 
 // IsLocalPendingReady returns true if the pod is pending or not ready locally on the node.
@@ -240,9 +242,15 @@ func IsLocalPendingReady(pod *v1.Pod) bool {
 	return ready
 }
 
-// IsMigPodTask returns true if the pod requests GPU slice (MIG) resources.
+// IsMigPodTask returns true if the pod requests GPU slice resources together with
+// the MIG label rt_mig_enable=true.
 func IsMigPodTask(pod *v1.Pod) bool {
-	return GetResourceReqFromPod(pod, ResourceSlice) > 0
+	return GetResourceReqFromPod(pod, ResourceSlice) > 0 && HasMigLabel(pod)
+}
+
+// HasMigLabel returns true if the pod carries the MIG label rt_mig_enable=true.
+func HasMigLabel(pod *v1.Pod) bool {
+	return GetLabelsFromPodStr(pod, LabelsMigTask) == MigLabelValue
 }
 
 // IsCiTask returns true if the pod is a MIG CI (Compute Instance) task (requesting both slice and memory).
@@ -253,4 +261,91 @@ func IsCiTask(pod *v1.Pod) bool {
 // IsGiTask returns true if the pod is a MIG GI (GPU Instance) task (requesting slice only).
 func IsGiTask(pod *v1.Pod) bool {
 	return GetResourceReqFromPod(pod, ResourceMemory) <= 0 && IsMigPodTask(pod)
+}
+
+// IsMpsPodTask returns true if the pod is an MPS space-sharing task: it requests
+// GPU slices without the MIG label, and does not request whole cards.
+// GPU memory is optional; MPS slices are the only capacity driver.
+// A pod that also requests 0 < gpu-core < 100 is treated as a time-sharing task
+// instead, because the gpu-core request takes precedence over the slice request.
+func IsMpsPodTask(pod *v1.Pod) bool {
+	if IsNormalPodTask(pod) {
+		return false
+	}
+	if vcore := GetResourceReqFromPod(pod, ResourceCore); vcore > 0 && vcore < 100 {
+		return false
+	}
+	return GetResourceReqFromPod(pod, ResourceSlice) > 0 && !HasMigLabel(pod)
+}
+
+// IsNormalVirtualTask returns true if the pod is a time-sharing task: it requests
+// 0 < gpu-core < 100 (which wins even when gpu-slice is also requested), or it
+// requests gpu-memory without any gpu-slice.
+func IsNormalVirtualTask(pod *v1.Pod) bool {
+	if vcore := GetResourceReqFromPod(pod, ResourceCore); vcore > 0 && vcore < 100 {
+		return true
+	}
+	if GetResourceReqFromPod(pod, ResourceSlice) > 0 {
+		return false
+	}
+	return GetResourceReqFromPod(pod, ResourceMemory) > 0
+}
+
+// IsNormalTask returns true if the pod is a non-MPS GPU task:
+// whole-card, MIG (label or public annotation), or time-sharing.
+// It is derived from GetPodGpuTaskType so that both stay in sync.
+func IsNormalTask(pod *v1.Pod) bool {
+	switch GetPodGpuTaskType(pod) {
+	case PodGpuTaskWholeCard, PodGpuTaskMig, PodGpuTaskTimeSharing:
+		return true
+	}
+	return false
+}
+
+// GetPodGpuTaskType returns the GPU task classification of a pod.
+// The rules are evaluated in scheduling priority order, so a pod matching several
+// rules is classified by the highest priority one:
+//  1. whole-card   (highest): gpu/nvidia/gpu-count request, or gpu-core >= 100
+//  2. MIG                    : gpu-slice + label rt_mig_enable=true + optional gpu-memory (Mig plugin)
+//  3. time-sharing           : 0 < gpu-core < 100, or gpu-memory only
+//  4. MPS          (lowest)  : gpu-slice without the MIG label, gpu-memory optional
+//
+// For example a pod requesting both nvidia.com/gpu and gpu-slice is a whole-card
+// task, and a pod requesting gpu-slice plus 0 < gpu-core < 100 is a time-sharing task.
+func GetPodGpuTaskType(pod *v1.Pod) PodGpuTaskType {
+	switch {
+	case IsNormalPodTask(pod):
+		return PodGpuTaskWholeCard
+	case IsMigPodTask(pod), IsPublicMigPodTask(pod):
+		return PodGpuTaskMig
+	case IsNormalVirtualTask(pod):
+		return PodGpuTaskTimeSharing
+	case IsMpsPodTask(pod):
+		return PodGpuTaskMps
+	}
+	return PodGpuTaskNone
+}
+
+// GetPodTaskMode returns the scheduling task mode for a pod.
+// Whole-card, MIG and time-sharing tasks all map to TaskModeNormal: they are
+// mutually exclusive with MPS only, which is the sole TaskModeMPS producer.
+func GetPodTaskMode(pod *v1.Pod) TaskMode {
+	switch GetPodGpuTaskType(pod) {
+	case PodGpuTaskWholeCard, PodGpuTaskMig, PodGpuTaskTimeSharing:
+		return TaskModeNormal
+	case PodGpuTaskMps:
+		return TaskModeMPS
+	}
+	return TaskModeUnknown
+}
+
+// IsActiveMonitoringPod returns true if the pod is a ActiveMonitoring Pod (label rt-diag=true).
+func IsActiveMonitoringPod(pod *v1.Pod) bool {
+	return pod != nil && pod.Labels[LabelActiveMonitoring] == "true"
+}
+
+// GetActiveMonitoringTargetMinor reads the pinning annotation rt-diag-target-minor and
+// returns the target GPU minor for a detection Pod.
+func GetActiveMonitoringTargetMinor(pod *v1.Pod) (int, error) {
+	return GetAnnotationsFromPodInt(pod, AnnoActiveMonitoringTargetMinor)
 }

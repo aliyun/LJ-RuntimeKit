@@ -1,0 +1,65 @@
+/*
+Copyright (c) 2024-2026 Alibaba Cloud.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+syntax = "proto3";
+
+// NOTE: intentionally no `package` declaration, so that the fully-qualified
+// service name is exactly "XpuDeviceManagerService". This file is a *client side
+// subset* of X-Device-Manager's outer service
+// (X-Device-Manager/pkg/grpc/outer/api_outer.proto) containing only the
+// migration methods the worker needs. Service name, method name and field
+// numbers MUST stay in sync with it.
+
+option go_package = "AMPHpcScheduler/pkg/apis/xdm";
+
+service XpuDeviceManagerService {
+  // Checkpoint produces rootfs/ memory/ xpu/ for one container and streams
+  // them back as N independent tar parts, each a complete archive carrying the
+  // full directory skeleton. Part boundaries inside the single RPC stream are
+  // marked by CheckpointPartEOFPrefix sentinels in the message field (kept in
+  // sync with X-Device-Manager/pkg/migration.CheckpointPartEOFPrefix).
+  rpc Checkpoint(CheckpointRequest) returns (stream CheckpointResponse);
+  // RestoreXPU restores the XPU device state of a container whose process is
+  // already running after `runc restore`. Runs cr-tool synchronously; a missing
+  // xpu/ directory (CPU-only container) is answered with success.
+  rpc RestoreXPU(RestoreXPURequest) returns (RestoreXPUResponse);
+}
+
+message CheckpointRequest {
+  // container_id is the container id on the node.
+  string container_id = 1;
+  map<string, string> options = 2;
+}
+
+message CheckpointResponse {
+  int32 status = 1;
+  string message = 2;
+  bytes data_chunk = 3;
+}
+
+message RestoreXPURequest {
+  // container_id is the CRI container id; a "containerd://" prefix, if present,
+  // is stripped by XDM.
+  string container_id = 1;
+  // snapshot_path contains the xpu/ sub-directory holding the cr-tool state.
+  string snapshot_path = 2;
+  map<string, string> options = 3;
+}
+
+message RestoreXPUResponse {
+  int32 status = 1;
+  string message = 2;
+}

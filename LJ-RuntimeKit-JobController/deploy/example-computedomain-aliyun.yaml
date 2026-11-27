@@ -1,0 +1,35 @@
+# ComputeDomain 自定义资源示例（resource.aliyun.com API group）
+#
+# 本示例与 example-computedomain.yaml 一一对应，区别只在于 API group：
+#   - 本文件：apiVersion: resource.aliyun.com/v1beta1
+#   - 另一份：apiVersion: resource.nvidia.com/v1beta1
+# 控制器始终同时服务两个 Group，无需任何额外参数。
+# 两组共用同一套 CRD schema 与 aliyun.com/clique-domain、aliyun.com/clique
+# 两个 CDClique 标签，但控制器严格按来源 Group 隔离读写。
+#
+# 同一 namespace 下，两个 Group 的 ComputeDomain 必须使用不同的
+# spec.channel.resourceClaimTemplate.name：控制器不会接管或覆盖已存在且属于
+# 其他 ComputeDomain（含另一个 Group）的同名 ResourceClaimTemplate。
+#
+# 前置条件：
+#   - 集群已部署 resource.aliyun.com/v1beta1 ComputeDomain CRD
+#     （deploy/computedomains-aliyun-crd.yaml）
+#   - 同 namespace 下没有其他 ComputeDomain（含 NVIDIA 组）使用
+#     training-job-aliyun-channel-template；控制器会以该名称创建
+#     ResourceClaimTemplate，已存在且不属于本 ComputeDomain 时显式报冲突
+---
+apiVersion: resource.aliyun.com/v1beta1
+kind: ComputeDomain
+metadata:
+  name: training-job-aliyun-imex-domain
+  namespace: default
+spec:
+  # numNodes 已废弃（deprecated），不要设置。
+  channel:
+    # 控制器据此名称在同一个 namespace 中创建 ResourceClaimTemplate。注意与
+    # NVIDIA 示例使用的是不同名称（training-job-channel-template），避免跨组同名冲突。
+    resourceClaimTemplate:
+      name: training-job-aliyun-channel-template
+
+    # 可选，枚举值：All / Single，默认 All
+    allocationMode: All

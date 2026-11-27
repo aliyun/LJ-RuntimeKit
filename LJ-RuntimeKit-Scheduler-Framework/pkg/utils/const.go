@@ -27,6 +27,41 @@ const (
 	TypeMigGi MigDeviceType = "gi"
 )
 
+// TaskMode represents the scheduling mode of a GPU device based on running pods.
+type TaskMode int
+
+const (
+	// TaskModeUnknown means the device is idle or has no tracked virtual task.
+	TaskModeUnknown TaskMode = iota
+	// TaskModeNormal means the device is running time-sharing tasks, which request
+	// gpu-core/gpu-memory (core < 100, or gpu-memory only), or occupy a whole card.
+	TaskModeNormal
+	// TaskModeMPS means the device is running MPS space-sharing tasks, which request
+	// gpu-slice (with optional gpu-memory) without the MIG label.
+	TaskModeMPS
+)
+
+// PodGpuTaskType is the GPU task classification of a pod. The constants are
+// declared in scheduling priority order: a pod matching several rules is
+// classified by the highest priority rule it matches.
+type PodGpuTaskType string
+
+const (
+	// PodGpuTaskWholeCard is the highest priority class: a whole card request through
+	// gpu/nvidia/gpu-count resources, or gpu-core >= 100.
+	PodGpuTaskWholeCard PodGpuTaskType = "whole-card"
+	// PodGpuTaskMig is a MIG task (gpu-slice with the rt_mig_enable=true label, or the
+	// public MIG device annotation), scheduled by the Mig plugin.
+	PodGpuTaskMig PodGpuTaskType = "mig"
+	// PodGpuTaskTimeSharing is a time-sharing task: 0 < gpu-core < 100, or gpu-memory
+	// only. It wins over MPS when gpu-slice is requested as well.
+	PodGpuTaskTimeSharing PodGpuTaskType = "time-sharing"
+	// PodGpuTaskMps is the lowest priority class: gpu-slice without the MIG label.
+	PodGpuTaskMps PodGpuTaskType = "mps"
+	// PodGpuTaskNone means the pod requests no GPU resource handled by this scheduler.
+	PodGpuTaskNone PodGpuTaskType = ""
+)
+
 var (
 	ResourceMemory = "aliyun.com/gpu-memory"
 	ResourceCore   = "aliyun.com/gpu-core"
@@ -53,6 +88,13 @@ var (
 	ScheduleStrategyBinpack   = "binpack"            // Binpack scheduling strategy.
 
 	LabelsReplicas = "replicas"
+
+	// LabelsMigTask marks both MIG pods and MIG-capable nodes; value "true" enables MIG mode.
+	// A pod requesting gpu-slice with this label is a MIG task, and it can only be
+	// scheduled onto a node carrying the same label.
+	LabelsMigTask = "rt_mig_enable"
+	// MigLabelValue is the label value that marks a pod or node as MIG.
+	MigLabelValue = "true"
 
 	// Gang scheduling node topology labels.
 	LabelNodeLeafSwitchId = "aliyun.com/leaf-switch-id" // Leaf Switch domain.
@@ -90,6 +132,17 @@ var (
 	ResourceRDMA       = "aliyun.com/rdma"
 	// Selected PCIe switch indexes (comma-separated, e.g. "0,1") passed to xdm.
 	AnnotationPcieSwitchIndex = "ALIYUN_COM_PCIESWITCH_INDEX"
+)
+
+const (
+	// LabelActiveMonitoring marks a Pod as a ActiveMonitoring detection Pod when set to "true".
+	LabelActiveMonitoring = "rt-diag"
+	// LabelActiveMonitoringCR associates a detection Pod with its owning ActiveMonitoring CR name.
+	LabelActiveMonitoringCR = "rt-diag-cr"
+	// LabelActiveMonitoringTask associates a detection Pod with a specific TaskID.
+	LabelActiveMonitoringTask = "rt-diag-task"
+	// AnnoActiveMonitoringTargetMinor pins a detection Pod onto a specific GPU minor.
+	AnnoActiveMonitoringTargetMinor = "rt-diag-target-minor"
 )
 
 var NotFoundErr = errors.New("cannot found the value from the key")

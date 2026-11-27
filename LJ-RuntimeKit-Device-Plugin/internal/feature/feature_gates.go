@@ -36,7 +36,13 @@ const (
 	// CheckpointGC enables the periodic reconciliation of the dp checkpoint
 	// records against the pods still present on the node (kubelet 10255):
 	// records of deleted pods are dropped and their allocations released in xdm.
-	CheckpointGC featuregate.Feature = "CheckpointGC"
+	CheckpointGC  featuregate.Feature = "CheckpointGC"
+	ComputeDomain featuregate.Feature = "ComputeDomain"
+	// TopoWatch keeps the xdm ListAndWatch stream open and re-syncs the node
+	// topology annotations, labels and the rdma resource on every snapshot,
+	// including the explicit empty topology xdm pushes when it withdraws the
+	// topology. Without it the topology is only consumed once at startup.
+	TopoWatch featuregate.Feature = "TopoWatch"
 )
 
 var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
@@ -48,6 +54,8 @@ var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	PluginAliPossibility: {Default: true, PreRelease: featuregate.Beta},
 	PluginGpuCount:       {Default: true, PreRelease: featuregate.Beta},
 	CheckpointGC:         {Default: true, PreRelease: featuregate.Alpha},
+	ComputeDomain:        {Default: false, PreRelease: featuregate.Alpha},
+	TopoWatch:            {Default: true, PreRelease: featuregate.Beta},
 }
 
 func PluginFeatureConvert(resourceName string) featuregate.Feature {

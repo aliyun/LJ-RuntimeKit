@@ -67,18 +67,24 @@ affinity: {}
   #        operator: Exists
 
 amperfVolumes:
-  - name: xdm-grpc
+  - name: rt-grpc
     hostPath: "/run/amp/eKitC/xdm/sockets/"
   - name: pod-resources
     hostPath: "/var/lib/kubelet/pod-resources"
 
 amperfVolumeMounts:
-  - name: xdm-grpc
+  - name: rt-grpc
     mountPath: "/run/amp/eKitC/xdm/sockets/"
   - name: pod-resources
     mountPath: "/var/lib/kubelet/pod-resources"
 
 hostNetwork: true
+
+# Install the host adapter and attempt configuration generation once per pod start.
+# Generation failure does not block the exporter; missing files are retried on invocation.
+# The host NPD service must load the generated configuration separately.
+npdAdapter:
+  enabled: true
 
 amperfEnv:
   - name: "AMPERF_EXPORTER_LISTEN"

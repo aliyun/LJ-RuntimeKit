@@ -19,7 +19,7 @@ The project does not maintain multiple long-lived release branches. New versions
 A release may include the following artifacts:
 
 - `exporter` binary, built from `cmd/exporter`.
-- Docker image, published to `registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-exporter:<VERSION>` by default.
+- Docker image, published to `lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-exporter:<VERSION>` by default.
 - Helm chart under `deployment/`.
 - Git tag matching the release version.
 
@@ -98,7 +98,7 @@ make docker VERSION=${VERSION} REGISTRY=<registry>/<namespace>/<image>
 Push the image after a successful build:
 
 ```bash
-docker push registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-exporter:${VERSION}
+docker push lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-exporter:${VERSION}
 ```
 
 If a custom registry was used during build, push the matching image tag instead.

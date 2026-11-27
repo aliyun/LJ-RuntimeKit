@@ -22,6 +22,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/lj-runtimekit/scheduler/pkg/activemonitoring"
 	"github.com/lj-runtimekit/scheduler/pkg/gang"
 	"github.com/lj-runtimekit/scheduler/pkg/mig"
 	"github.com/lj-runtimekit/scheduler/pkg/standard"
@@ -38,6 +39,7 @@ func main() {
 		app.WithPlugin(standard.Name, standard.New),
 		app.WithPlugin(mig.Name, mig.New),
 		app.WithPlugin(gang.Name, gang.New),
+		app.WithPlugin(activemonitoring.Name, activemonitoring.New),
 	)
 
 	logs.InitLogs()

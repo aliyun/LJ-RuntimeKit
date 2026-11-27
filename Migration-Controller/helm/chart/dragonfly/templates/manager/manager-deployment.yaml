@@ -1,0 +1,137 @@
+{{- if .Values.manager.enable }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ template "dragonfly.fullname" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: {{ .Values.manager.name }}
+  name: {{ template "dragonfly.manager.fullname" . }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  annotations:
+  {{- if .Values.manager.deploymentAnnotations }}
+{{ toYaml .Values.manager.deploymentAnnotations | indent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.manager.updateStrategy }}
+  strategy: {{- toYaml .Values.manager.updateStrategy | nindent 4 }}
+  {{- end }}
+  replicas: {{ .Values.manager.replicas }}
+  selector:
+    matchLabels:
+      app: {{ template "dragonfly.fullname" . }}
+      component: {{ .Values.manager.name }}
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ template "dragonfly.fullname" . }}
+        component: {{ .Values.manager.name }}
+        release: {{ .Release.Name }}
+        {{- if .Values.manager.podLabels }}
+{{ toYaml .Values.manager.podLabels | indent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/manager/manager-configmap.yaml") . | sha256sum }}
+      {{- if .Values.manager.podAnnotations }}
+{{ toYaml .Values.manager.podAnnotations | indent 8 }}
+      {{- end }}
+    spec:
+      hostNetwork: {{ .Values.manager.hostNetwork }}
+      {{- if .Values.manager.hostNetwork }}
+      dnsPolicy: "ClusterFirstWithHostNet"
+      {{- end }}
+      {{- with .Values.manager.nodeSelector | default .Values.global.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.manager.tolerations }}
+      tolerations:
+{{ toYaml .Values.manager.tolerations | indent 8 }}
+      {{- end }}
+      {{- if .Values.manager.affinity }}
+      affinity:
+{{ toYaml .Values.manager.affinity | indent 8 }}
+      {{- end }}
+      {{- if quote .Values.manager.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.manager.terminationGracePeriodSeconds }}
+      {{- end }}
+      {{- if .Values.scheduler.priorityClassName }}
+      priorityClassName: {{ .Values.manager.priorityClassName }}
+      {{- end }}
+      {{- with .Values.manager.image.pullSecrets | default .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.manager.hostAliases }}
+      hostAliases:
+{{ toYaml .Values.manager.hostAliases | indent 8 }}
+      {{- end }}
+      {{- if or .Values.redis.enable .Values.mysql.enable }}
+      initContainers:
+      {{- if .Values.redis.enable }}
+      - name: wait-for-redis
+        image: {{ template "manager.initContainer.image" . }}
+        imagePullPolicy: {{ .Values.manager.initContainer.image.pullPolicy }}
+        command: ['sh', '-c', 'until nslookup {{ .Release.Name }}-{{ default "redis" .Values.redis.fullname }}-master.{{ $.Release.Namespace }}.svc.{{ $.Values.clusterDomain }} && nc -vz {{ .Release.Name }}-{{ default "redis" .Values.redis.fullname }}-master.{{ $.Release.Namespace }}.svc.{{ $.Values.clusterDomain }} {{ .Values.redis.master.service.ports.redis }}; do echo waiting for redis; sleep 2; done;']
+        resources:
+{{ toYaml .Values.manager.initContainer.resources | indent 10 }}
+      {{- end }}
+      {{- if .Values.mysql.enable }}
+      - name: wait-for-mysql
+        image: {{ template "manager.initContainer.image" . }}
+        imagePullPolicy: {{ .Values.manager.initContainer.image.pullPolicy }}
+        command: ['sh', '-c', 'until nslookup {{ .Release.Name }}-{{ default "mysql" .Values.mysql.fullname }}.{{ $.Release.Namespace }}.svc.{{ $.Values.clusterDomain }} && nc -vz {{ .Release.Name }}-{{ default "mysql" .Values.mysql.fullname }}.{{ $.Release.Namespace }}.svc.{{ $.Values.clusterDomain }} {{ .Values.mysql.primary.service.port }}; do echo waiting for mysql; sleep 2; done;']
+        resources:
+{{ toYaml .Values.manager.initContainer.resources | indent 10 }}
+      {{- end }}
+      {{- end }}
+      containers:
+      - name: manager
+        image: {{ template "manager.image" . }}
+        imagePullPolicy: {{ .Values.manager.image.pullPolicy | quote }}
+        resources:
+{{ toYaml .Values.manager.resources | indent 10 }}
+        env:
+        {{- if .Values.manager.maxProcs }}
+        - name: GOMAXPROCS
+          value: {{ .Values.manager.maxProcs }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.manager.restPort }}
+          protocol: TCP
+        - containerPort: {{ .Values.manager.grpcPort }}
+          protocol: TCP
+        {{- if .Values.manager.metrics.enable }}
+        - containerPort: 8000
+          protocol: TCP
+        {{- end }}
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/dragonfly"
+        {{- if .Values.manager.extraVolumeMounts }}
+        {{- toYaml .Values.manager.extraVolumeMounts | nindent 8 }}
+        {{- end }}
+        readinessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:{{ .Values.manager.grpcPort }}"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:{{ .Values.manager.grpcPort }}"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: {{ template "dragonfly.manager.fullname" . }}
+          items:
+          - key: manager.yaml
+            path: manager.yaml
+      {{- if .Values.manager.extraVolumes }}
+      {{- toYaml .Values.manager.extraVolumes | nindent 6 }}
+      {{- end }}
+{{- end }}

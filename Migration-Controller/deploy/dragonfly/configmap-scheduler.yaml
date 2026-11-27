@@ -1,0 +1,24 @@
+apiVersion: v1
+data:
+  scheduler.yaml: "server:\n  advertiseIP: \"\"\n  advertisePort: 8002\n  cacheDir:
+    \"\"\n  dataDir: \"\"\n  listenIP: 0.0.0.0\n  logDir: \"\"\n  pluginDir: \"\"\n
+    \ port: 8002\n  workHome: \"\"\nscheduler:\n  algorithm: default\n  backToSourceCount:
+    200\n  gc:\n    hostGCInterval: 5m\n    hostTTL: 1h\n    peerGCInterval: 10s\n
+    \   peerTTL: 48h\n    pieceDownloadTimeout: 30m\n    taskGCInterval: 30m\n  retryBackToSourceLimit:
+    3\n  retryInterval: 50ms\n  retryLimit: 5\ndatabase:\n  redis:\n    addrs:\n      -
+    dragonfly-redis-ext.dragonfly.svc.cluster.local:6379\n    masterName: \n    username:
+    \n    password: \n    brokerDB: 1\n    backendDB: 2\ndynconfig:\n  refreshInterval:
+    1m\n  type: manager\nhost:\n  idc: \"\"\n  location: \"\"\nmanager:\n  addr: dragonfly-manager.dragonfly.svc.cluster.local:65003\n
+    \ schedulerClusterID: 1\n  keepAlive:\n    interval: 5s\nseedPeer:\n  enable:
+    true\njob:\n  redis:\n    addrs:\n      - dragonfly-redis-ext.dragonfly.svc.cluster.local:6379\n
+    \   masterName: \n    username: \n    password: \n    brokerDB: 1\n    backendDB:
+    2\nstorage:\n  null\nnetwork:\n  enableIPv6: false\nmetrics:\n  enable: true\n
+    \ addr: \":8000\"\n  enableHost: false\nconsole: true\nverbose: false"
+kind: ConfigMap
+metadata:
+  annotations:
+  labels:
+    app: dragonfly
+    component: scheduler
+  name: dragonfly-scheduler
+  namespace: dragonfly

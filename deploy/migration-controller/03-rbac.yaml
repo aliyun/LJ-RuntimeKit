@@ -1,0 +1,227 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lj-runtimekit-migration-controller-leader-election-role
+  namespace: kube-system
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lj-runtimekit-migration-controller-leader-election-rolebinding
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lj-runtimekit-migration-controller-leader-election-role
+subjects:
+  - kind: ServiceAccount
+    name: lj-runtimekit-migration-controller
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lj-runtimekit-migration-controller-role
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/exec
+    verbs:
+      - create
+  - apiGroups:
+      - migration.io
+    resources:
+      - containerstatemigrationjobrequests
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - migration.io
+    resources:
+      - containerstatemigrationjobrequests/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - migration.io
+    resources:
+      - containerstatemigrationjobrequests/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - migration.io
+    resources:
+      - preheatjobs
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - migration.io
+    resources:
+      - preheatjobs/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - migration.io
+    resources:
+      - preheatjobs/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  # PVC direct-attach storage: InitHandler validates PVC existence and
+  # accessMode (RWX is mandatory in the restore stage; non-RWX errors directly).
+  # The cache-backed Client builds an informer for PVCs, so list/watch is needed
+  # beyond get.
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+  # PVC source of EFC preheat: resolving target_path needs the PV's
+  # volumeAttributes.path (the in-bucket prefix of the PVC mount root). The
+  # cache-backed Client builds an informer for PVs; without list/watch, Get
+  # would block reconcile forever, so get/list/watch must all be present.
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumes
+    verbs:
+      - get
+      - list
+      - watch
+  # Preheat source Service: the remoteURL of PVC preheat uses the resident
+  # Service's ClusterIP (named by hashing PVC coordinates + path, selector-less,
+  # resident and never deleted); the backend is declared by a manual
+  # EndpointSlice. The controller creates the EndpointSlice along with the
+  # preheat source pod (ownerReference pointing to the pod, reclaimed by GC).
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lj-runtimekit-migration-controller-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lj-runtimekit-migration-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: lj-runtimekit-migration-controller
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lj-runtimekit-migration-controller
+  namespace: kube-system

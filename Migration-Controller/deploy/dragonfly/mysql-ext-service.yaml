@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dragonfly-mysql-ext
+  namespace: dragonfly
+spec:
+  ports:
+  - port: 3306
+    targetPort: 3306
+  selector:
+    app: dragonfly-mysql-ext

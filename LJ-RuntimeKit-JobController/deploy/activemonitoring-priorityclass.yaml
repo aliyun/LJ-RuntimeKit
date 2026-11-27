@@ -1,0 +1,10 @@
+# ActiveMonitoring 检测 Pod 专用低优先级 PriorityClass
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: runtimekit-activemonitoring
+value: -1000000
+globalDefault: false
+preemptionPolicy: Never
+description: "Lowest priority for ActiveMonitoring SDC detection Pods; any business Pod preempts them so detection yields to real workloads."

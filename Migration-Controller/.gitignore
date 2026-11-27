@@ -1,0 +1,43 @@
+# Build artifacts
+bin/
+output/
+dist/
+
+# Dependencies (regenerate on demand via `go mod vendor`)
+vendor/
+
+# Compiled / linked
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Test / coverage output
+*.out
+cover.out
+coverage.txt
+*.cover
+
+# Vendored cross-compile leftover
+Dockerfile.cross
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local overrides
+*.local
+.env
+.env.local
+
+# Image tar packages
+*.tar
+*.tar.gz

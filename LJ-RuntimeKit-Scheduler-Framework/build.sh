@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REGISTRY_NAME=${1:-${REGISTRY_NAME:-"registry.cn-hangzhou.aliyuncs.com/eflops-amp"}}
+REGISTRY_NAME=${1:-${REGISTRY_NAME:-"lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit"}}
 AMP_PACK_VERSION=${2:-${AMP_PACK_VERSION:-"v1.0.0"}}
 IMAGE_NAME="lj-runtimekit-scheduler-framework"
 SOURCE_HELM_DIR="${SCRIPT_DIR}/helm"

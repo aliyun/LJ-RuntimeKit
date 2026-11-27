@@ -1,0 +1,133 @@
+/*
+Copyright (c) 2024-2026 Alibaba Cloud.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Field 3 is renamed profiling_status to avoid the document's duplicate status name; wire numbers are unchanged.
+syntax = "proto3";
+
+option go_package = "github.com/lj-runtimekit/exporter/api/rtkit/profiling";
+
+import "google/protobuf/duration.proto";
+
+// Profiling Service - RuntimeKit Daemon 提供的 Profiling 接口
+service XpuDeviceManagerService {
+  // 开启 Profiling
+  rpc StartProfiling(StartProfilingRequest) returns (StartProfilingResponse);
+
+  // 停止 Profiling
+  rpc StopProfiling(StopProfilingRequest) returns (StopProfilingResponse);
+
+  // 获取 Profiling 状态
+  rpc QueryProfilingStatus(QueryProfilingStatusRequest) returns (QueryProfilingStatusResponse);
+
+  // 流式获取 Profiling 数据
+  rpc StreamProfilingData(StreamProfilingDataRequest) returns (stream ProfilingData);
+}
+
+enum ProfilingMode {
+  PROFILING_MODE_LIGHT = 0;
+  PROFILING_MODE_FULL = 1;
+}
+
+// 开启 Profiling 请求
+message StartProfilingRequest {
+  // 唯一标识容器的id
+  string id = 1;
+
+  // 可省略，默认 FULL；LIGHT 对应 -m light，FULL 对应 -m full。
+  optional ProfilingMode mode = 2;
+
+  // 采集时长，必填且必须为合法的 Duration，>0 且最多 24h。
+  google.protobuf.Duration duration = 3;
+
+  // 扩展参数，当前不透传给 amperfd。
+  map<string, string> options = 4;
+}
+
+// 开启 Profiling 响应
+message StartProfilingResponse {
+  // 0 成功；1005 错误（包括无效 duration）；1006 忙（无空闲 worker）；1007 该容器已有 pending/running 任务。
+  int32 status = 1;
+
+  // 错误信息（如果有）
+  string messages = 2;
+}
+
+// 停止 Profiling 请求
+message StopProfilingRequest {
+  // 唯一标识容器的id
+  string id = 1;
+}
+
+// 停止 Profiling 响应
+message StopProfilingResponse {
+  int32 status = 1;
+
+  // 错误信息（如果有）
+  string messages = 2;
+}
+
+// 获取 Profiling 状态请求
+message QueryProfilingStatusRequest {
+  // 唯一标识容器的id
+  string id = 1;
+}
+
+// Profiling 状态
+enum ProfilingStatus {
+  PROFILING_STATUS_PENDING = 0;
+  PROFILING_STATUS_RUNNING = 1;
+  PROFILING_STATUS_COMPLETED = 2;
+  PROFILING_STATUS_FAILED = 3;
+  PROFILING_STATUS_CANCELED = 4;
+}
+
+// 获取 Profiling 状态响应
+message QueryProfilingStatusResponse {
+  int32 status = 1;
+
+  // 错误信息（如果有）
+  string messages = 2;
+
+  // 状态
+  ProfilingStatus profiling_status = 3;
+
+  // 已采集时长
+  google.protobuf.Duration elapsed_duration = 4;
+}
+
+// 导出 Profiling 结果请求
+message StreamProfilingDataRequest {
+  // 唯一标识容器的id
+  string id = 1;
+
+  // 扩展选项，当前不使用。
+  map<string, string> options = 2;
+}
+
+// Profiling 数据（原始内容按文件依次传输，不合并或转换格式）
+message ProfilingData {
+  // 唯一标识容器的id
+  string id = 1;
+
+  // 原始数据流
+  bytes raw_data = 2;
+
+  // full: result.json；light: lastkernels.log、kerneltime.log。
+  string file_name = 3;
+
+  // 每个文件结束时单独发送空 raw_data 的标记，空文件也发送。
+  bool file_end = 4;
+}

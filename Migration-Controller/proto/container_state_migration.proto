@@ -1,0 +1,244 @@
+/*
+Copyright (c) 2024-2026 Alibaba Cloud.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+syntax = "proto3";
+
+package migrationworker;
+option go_package="./migrationworker";
+
+// BaseResponse 通用应答
+message BaseResponse {
+  // requestID 请求id
+  string requestID = 1;
+  // status 状态码
+  int32 status = 2;
+  // message 错误信息
+  string message = 3;
+}
+
+// LocalStorage 存储在本地
+message LocalStorage {
+  string path = 1;
+}
+
+message NFS {
+  string server = 1;
+  string path = 2;
+  map<string,string> options = 3;
+}
+
+message OSS {
+  string mountPoint = 1;
+  string endpoint = 2;
+  map<string,string> options = 3;
+}
+
+// Dragonfly 通过 dfdaemon P2P 网络进行文件分发
+message Dragonfly {
+  // dfdaemon gRPC 地址，如 "127.0.0.1:65000"
+  string endpoint = 1;
+  // OSS 挂载点（用于 Upload 直传 OSS）
+  string oss_mount_point = 2;
+  // OSS endpoint（用于 Upload 直传 OSS）
+  string oss_endpoint = 3;
+  // 附加配置（含 OSS accessKeyId/accessKeySecret 等）
+  map<string,string> options = 4;
+  // 关联的 PreheatJob CR 名称，worker 据此从 API Server 查询预热任务状态
+  string preheat_job_name = 5;
+  // 关联的 PreheatJob CR 命名空间
+  string preheat_job_namespace = 6;
+}
+
+// EFC 通过节点侧 runtimekit 的 warmup 服务把 checkpoint 目录预热进 EFC 缓存
+//
+// 只有预热坐标：EFC 的挂载与回源由节点侧 runtimekit 自己负责，controller 侧
+// 唯一需要透传的就是关联的 PreheatJob CR。
+message EFC {
+  // 关联的 PreheatJob CR 名称，worker 据此从 API Server 查询预热任务状态
+  string preheat_job_name = 1;
+  // 关联的 PreheatJob CR 命名空间
+  string preheat_job_namespace = 2;
+
+  string bucket_name = 3;
+  // 附加配置
+  map<string,string> options = 4;
+}
+
+// PVC 通过挂载进任务级 worker 的 PersistentVolumeClaim 直读写 checkpoint 数据
+//
+// 挂载点固定为 /mnt/pv：checkpoint 数据直接写到挂载的 PVC 里，restore 直接从
+// 挂载的 PVC 里读，不经过 OSS/EFC 等远端存储。restore 读取走哪条预热链路
+// （Dragonfly 或 EFC）由 worker 命令行参数 --pvc-preheat-backend 决定。
+message PVC {
+  // PVC 名称
+  string pvc_name = 1;
+  // PVC 所在命名空间
+  string pvc_namespace = 2;
+}
+
+message Storage {
+  LocalStorage local = 1;
+  NFS nfs = 2;
+  OSS oss = 3;
+  Dragonfly dragonfly = 4;
+  EFC efc = 5;
+  PVC pvc = 6;
+}
+
+message CheckpointPolicy {
+  string containerName = 1;
+  string containerID = 2;
+  // excludeFilepath 相对 rootfs 的路径前缀，命中的条目不进入 rootfs/ 快照
+  repeated string excludeFilepath = 3;
+  string checkpointID = 4;
+  map<string,string> advanceOptions = 5;
+}
+
+// CheckpointToStorageRequest 把源容器 checkpoint 成 rootfs/memory/xpu 三份数据并上传
+message CheckpointToStorageRequest {
+  string requestID = 1;
+
+  string podName = 2;
+  string podNamespace = 3;
+  string podUID = 4;
+  string version = 5;
+
+  repeated CheckpointPolicy policy = 6;
+
+  string storageType = 7;
+  Storage storage = 8;
+}
+
+// QueryCheckpointToStorageStatusRequest 查询checkpoint任务状态
+message QueryCheckpointToStorageStatusRequest {
+  string requestID = 1;
+}
+
+// CheckpointAttributes checkpoint的属性
+message CheckpointAttributes {
+  // path 路径
+  string path = 1;
+  // size 文件大小
+  int64 size = 2;
+  // fileCount 文件数量
+  int64 fileCount = 3;
+  // totalDuration 总耗时
+  int64 totalDuration = 4;
+  // extras 其他属性
+  map<string,string> extras = 5;
+}
+
+// QueryCheckpointToStorageStatusResponse 查询返回的任务状态
+message QueryCheckpointToStorageStatusResponse {
+  // requestID 请求id
+  string requestID = 1;
+  // status 状态码
+  int32 status = 2;
+  // message 错误信息
+  string message = 3;
+  // data <containerName,CheckpointAttributes>
+  map<string,CheckpointAttributes> data = 4;
+}
+
+// RestoreFromStorageRequest 把 checkpoint 数据下载并解压到目标节点本地目录
+message RestoreFromStorageRequest {
+  string requestID = 1;
+
+  string podName = 2;
+  string podNamespace = 3;
+  string podUID = 4;
+  string version = 5;
+
+  // containerCheckpointPath: containerName -> remote storage path to the
+  // checkpoint directory (holding part-00.tar, part-01.tar, ...)
+  map<string,string> containerCheckpointPath = 6;
+
+  string storageType = 7;
+  Storage storage = 8;
+
+  // homeDir 数据落盘根目录，默认是 --save-dir 下的本地目录
+  string homeDir = 9;
+
+  // dataDir 若非空则直接作为解压目标目录（flat 布局：<hostPath>/data，其下
+  // 就是 rootfs/memory/xpu），此时忽略 homeDir/podUID/version/container 的拼接。
+  string dataDir = 10;
+}
+
+message QueryRestoreFromStorageStatusRequest {
+  // requestID 请求id
+  string requestID = 1;
+}
+
+message QueryRestoreFromStorageStatusResponse {
+  // requestID 请求id
+  string requestID = 1;
+  // status 状态码
+  int32 status = 2;
+  // message 错误信息
+  string message = 3;
+  // data <containerName, CheckpointAttributes>
+  map<string,CheckpointAttributes> data = 4;
+}
+
+// CleanTaskRequest 清理一次任务的运行时上下文
+message CleanTaskRequest {
+  // requestID 请求id
+  string requestID = 1;
+  // cleanData 是否同时删除已落盘的数据
+  bool cleanData = 2;
+  // checkpointDirs 显式指定要清理 memory/xpu 的 checkpoint 目录列表。
+  // cleanData=true 且本字段非空时，worker 直接按这些路径删（每个 dir 删
+  // memory/xpu、保留 rootfs），不依赖 requestID 对应的内存任务记录——用于
+  // worker 重启/被替换后内存记录已丢、但数据仍需随 CR 删除而清理的场景。
+  // 为空则回退到按 requestID 查内存记录清理（原有行为）。
+  repeated string checkpointDirs = 3;
+}
+
+// RestoreXPUOnNodeRequest 同步恢复目标节点上容器的 XPU 设备状态。
+// controller 在观测到 restore 目标容器 Running 之后下发；worker 把每个容器
+// 转发给本节点 XDM 的 RestoreXPU（cr-tool 同步执行，CPU-only 容器由 XDM 判定
+// 后直接返回成功）。全部容器成功才视为成功。
+message RestoreXPUOnNodeRequest {
+  // requestID 请求id
+  string requestID = 1;
+
+  string podName = 2;
+  string podNamespace = 3;
+
+  // containerCheckpointDir: CRI containerID -> 节点本地 checkpoint 目录
+  // （其下应有 xpu/；缺失表示 CPU-only 容器）。containerID 可带
+  // "containerd://" 前缀，由 XDM 剥离。
+  map<string,string> containerCheckpointDir = 4;
+}
+
+// ContainerStateMigrationService 负责容器状态迁移的节点侧工作。
+// checkpoint 链路：controller 下发 → worker 调本节点 XDM 取 tar 流 → 上传存储。
+// restore   链路：controller 下发 → worker 从存储下载 tar → 解压到节点本地目录
+//                → 容器 Running 后 controller 再下发 RestoreXPUOnNode 恢复设备状态。
+service ContainerStateMigrationService {
+  // CheckpointToStorage 把容器状态checkpoint到指定存储
+  rpc CheckpointToStorage(CheckpointToStorageRequest) returns (BaseResponse);
+  // QueryCheckpointToStorageStatus 查询CheckpointToStorage任务的进度
+  rpc QueryCheckpointToStorageStatus(QueryCheckpointToStorageStatusRequest) returns (QueryCheckpointToStorageStatusResponse);
+  // RestoreFromStorage 从存储中拉取并解压数据
+  rpc RestoreFromStorage(RestoreFromStorageRequest) returns (BaseResponse);
+  // QueryRestoreFromStorageStatus 查询拉取任务结果
+  rpc QueryRestoreFromStorageStatus(QueryRestoreFromStorageStatusRequest) returns (QueryRestoreFromStorageStatusResponse);
+  // CleanTask 清理任务与数据
+  rpc CleanTask(CleanTaskRequest) returns (BaseResponse);
+  // RestoreXPUOnNode 同步恢复容器 XPU 设备状态（转发本节点 XDM RestoreXPU）
+  rpc RestoreXPUOnNode(RestoreXPUOnNodeRequest) returns (BaseResponse);
+}

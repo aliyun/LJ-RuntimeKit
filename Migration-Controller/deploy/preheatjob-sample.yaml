@@ -1,0 +1,45 @@
+# Two minimal, directly applicable PreheatJob samples (only effective when
+# --enable-preheat-job is on).
+#
+# remoteURL and checkpointUID are mutually exclusive; remoteURL wins when both
+# are filled.
+---
+# Sample one: fill remoteURL manually
+apiVersion: migration.io/v1beta1
+kind: PreheatJob
+  # remoteURL points to the full HTTP(S) address of the checkpoint **directory**, of the form
+  name: sample-preheat
+  namespace: default
+spec:
+  # remoteURL points to the full HTTP(S) address of the checkpoint **directory**, of the form
+  # The controller probes which parts actually exist under the directory and
+  # creates a separate Dragonfly preheat task for **every** part - it must be
+  # so: the same object maps to the same task_id and dfdaemon would serve it as
+  # one task, so the restore side multi-path parallelism would gain nothing.
+  # Probing and preheating both use the AK/SK below for presigning, needing
+  # only the oss:GetObject permission.
+  # The controller probes which parts actually exist under the directory and
+  # creates a separate Dragonfly preheat task for **every** part - it must be so:
+    # accessKeyId / accessKeySecret are required when remoteURL is filled
+    # manually. In production prefer Secret injection to avoid leaving AK/SK in
+    # the CR as plaintext.
+  remoteURL: https://my-bucket.oss-cn-hangzhou.aliyuncs.com/migration/checkpoint
+  options:
+    # accessKeyId / accessKeySecret are required when remoteURL is filled manually.
+# Sample two: reference a checkpoint CR; the URL and credentials are all taken from it
+    accessKeyId: "<your-oss-access-key-id>"
+# Sample two: reference a checkpoint CR; the URL and credentials are all taken from it
+---
+# Sample two: reference a checkpoint CR; the URL and credentials are all taken from it
+apiVersion: migration.io/v1beta1
+kind: PreheatJob
+metadata:
+  name: sample-preheat-from-checkpoint
+  namespace: default
+spec:
+  # checkpointUID fills metadata.uid of the checkpoint CR (ContainerStateMigrationJobRequest),
+  # obtainable via kubectl get csmjr <name> -o jsonpath='{.metadata.uid}'.
+  # The controller composes remoteURL from the CR's spec.storage (oss / dragonfly
+  # backend) and status.checkpointStatus, and backfills the AK/SK in the
+  # storage options into spec.options; both are written back to this CR.
+  checkpointUID: "3f8c1a54-0b7d-4c62-9a1e-7d5f2b6c8e90"

@@ -1,0 +1,18 @@
+# One-click deployment of all Migration-Controller related resources:
+# already arranged in the CRD -> RBAC -> ConfigMap -> Deployment dependency order.
+#
+# Ordering is handled by kustomize following the resources list declaration
+# order.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Preheat (PreheatJob) is off by default, but its CRD is installed anyway so
+# users do not have to apply again after turning on --enable-preheat-job.
+# Dragonfly's own deployment (namespace / manager / scheduler / PAT secret) is
+resources:
+  - crd.yaml
+  - preheatjob-crd.yaml
+  - rbac.yaml
+  - worker-rbac.yaml
+  - worker-cm.yaml
+  - controller-deployment.yaml

@@ -26,10 +26,10 @@ MAIN_PKG        := ./$(CMD_DIR)/
 OUTPUT_DIR      := bin
 
 # Docker variables
-IMAGE_REGISTRY  := registry.cn-hangzhou.aliyuncs.com
-IMAGE_NAMESPACE := eflops-amp
+IMAGE_REGISTRY  := lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com
+IMAGE_NAMESPACE := lj-runtimekit
 IMAGE_NAME      := lj-runtimekit-device-plugin
-IMAGE_TAG       ?= v1.12.207
+IMAGE_TAG       ?= v1.14.0-k8s1.34
 IMAGE_FULL      := $(IMAGE_REGISTRY)/$(IMAGE_NAMESPACE)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Kubernetes variables
@@ -43,6 +43,7 @@ CGO_ENABLED     ?= 1
 GOOS            ?= linux
 GOARCH          ?= amd64
 GOPROXY         ?= https://mirrors.aliyun.com/goproxy/,direct
+GOLANG_IMAGE    ?= golang:1.26
 LDFLAGS         := -s -w
 
 # ==============================================================================
@@ -107,7 +108,7 @@ test-coverage:
 ## docker: Build Docker image
 docker:
 	@echo "==> Building Docker image $(IMAGE_FULL)..."
-	docker build --build-arg GOPROXY=$(GOPROXY) -t $(IMAGE_FULL) -f Dockerfile .
+	docker build --build-arg GOPROXY=$(GOPROXY) --build-arg GOLANG_IMAGE=$(GOLANG_IMAGE) -t $(IMAGE_FULL) -f Dockerfile .
 	@echo "==> Image built: $(IMAGE_FULL)"
 
 # ==============================================================================
@@ -166,4 +167,5 @@ help:
 	@echo "    CGO_ENABLED    CGO enabled (default: 1)"
 	@echo "    GOOS           Target OS (default: linux)"
 	@echo "    GOARCH         Target arch (default: amd64)"
+	@echo "    GOLANG_IMAGE   Go builder image (default: golang:1.26)"
 	@echo ""

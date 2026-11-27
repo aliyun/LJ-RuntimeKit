@@ -57,7 +57,7 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&jobNamespace, "job-namespace", "lj-runtimekit-system", "The namespace where the job will be created.")
-	flag.StringVar(&jobImage, "job-image", "lj-runtimekit-controller-job-agent:latest", "The image for the job agent.")
+	flag.StringVar(&jobImage, "job-image", "lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:v1.14.0-k8s1.34", "The image for the job agent.")
 
 	opts := zap.Options{
 		Development: true,

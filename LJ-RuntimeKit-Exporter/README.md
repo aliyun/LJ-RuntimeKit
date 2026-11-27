@@ -1,3 +1,5 @@
+**English** | [简体中文](README_zh.md)
+
 # LJ RuntimeKit Exporter
 
 LJ RuntimeKit Exporter is a software for online collection of heterogeneous hardware-related information/metrics
@@ -24,7 +26,7 @@ parameters or environment variables.
 ### Cloud-native Deployment Configuration
 #### Prerequisites
 
-- Image address: registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-exporter, with the image version selected
+- Image address: lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-exporter, with the image version selected
   according to actual needs.
 - Helm deployment file: the 'deployment/' folder is provided offline.
 
@@ -57,7 +59,56 @@ To build the LJ RuntimeKit Exporter from source, clone the repository and build 
 ```
 git clone https://github.com/aliyun/LJ-RuntimeKit.git
 cd LJ-RuntimeKit-Exporter
+make build
 ```
+
+### Profiling collector
+
+The standalone profiling collector lives in `cmd/collector`, with its implementation in
+`pkg/collector`, safe file operations in `pkg/safefs`, and Runtime Kit RPC definitions in
+`api/rtkit/profiling`. It profiles
+one target pod's containers and writes the original files to a PVC. It is separate from
+the long-running metrics exporter and has no JobController or Kubernetes client dependency.
+JobController still owns the CRD, scheduling, collector Pod templates and collector ConfigMap.
+
+Go 1.21 or newer is required. The collector builds with `CGO_ENABLED=0` and does not need
+GPU libraries on the build host; the exporter still requires CGO/DCGM support.
+
+```sh
+make build-collector                       # cmd/collector/profiling-collector
+./cmd/collector/profiling-collector --version
+./cmd/collector/profiling-collector collect --help
+make test-collector
+make package-collector GOOS=linux GOARCH=amd64 VERSION=v1.0.0
+make package-collector GOOS=linux GOARCH=arm64 VERSION=v1.0.0
+make docker-collector DOCKERCMD='docker build' VERSION=v1.0.0
+```
+
+Archives in `dist/` contain `profiling-collector` and `LICENSE`; their names include the
+version, OS and architecture. `make build-exporter` builds only the existing exporter,
+`make docker-exporter` builds its image, and `make docker` (or its historical alias
+`make docker-all`) builds both images without pushing.
+The collector image defaults to
+`lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-profiling-collector:$(VERSION)`;
+override `COLLECTOR_IMG` for another registry or tag. It retains
+`/bin/profiling-collector collect`, root access for the Runtime Kit socket, and a Debian
+runtime with shell utilities. Set JobController's collector ConfigMap `image` (or its
+`make deploy COLLECTOR_IMG=...` argument) to the same published image. The exporter Helm
+chart does not deploy this one-shot collector.
+
+With both repositories checked out as siblings, run the local protocol tests without a cluster:
+
+```sh
+make build-collector
+make -C ../LJ-RuntimeKit-JobController test-e2e \
+  E2E_COLLECTOR_BIN="$(pwd)/cmd/collector/profiling-collector"
+```
+
+The Runtime Kit RPC wire schema and collector termination JSON/file naming are contracts
+with JobController. Keep its fixture protocol and `internal/collectorprotocol` definitions
+in sync when changing those contracts; the two repositories deliberately do not import
+each other's Go modules. The profiling and metrics RPC packages describe the same service
+name and must not be linked into the same binary.
 
 #### Installation
 First, execute the amp_exporter script to complete image construction and generate yaml files. Modify the relevant parameters for building images through the amp_exporter script

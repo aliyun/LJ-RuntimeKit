@@ -1,6 +1,6 @@
 # Image URL to use all building/pushing image targets
-IMG ?= lj-runtimekit-controller:latest
-JOB_AGENT_IMG ?= lj-runtimekit-controller-job-agent:latest
+IMG ?= lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller:v1.14.0-k8s1.34
+JOB_AGENT_IMG ?= lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-controller-job-agent:v1.14.0-k8s1.34
 BUILDER_IMAGE ?= public.ecr.aws/docker/library/golang:1.22.7
 BASE_IMAGE ?= public.ecr.aws/docker/library/alpine:3.19
 GOPROXY ?= https://mirrors.aliyun.com/goproxy/,direct

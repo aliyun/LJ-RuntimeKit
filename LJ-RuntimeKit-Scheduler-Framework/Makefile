@@ -28,9 +28,9 @@ BIN_NAME   = kube-scheduler
 BIN_OUTPUT ?= ./$(BIN_NAME)
 
 # ---------- Docker image ----------
-REGISTRY   ?= registry.cn-hangzhou.aliyuncs.com/eflops-amp
+REGISTRY   ?= lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit
 IMAGE_NAME ?= lj-runtimekit-scheduler-framework
-VERSION    ?= v1.0.0
+VERSION    ?= v1.14.0-k8s1.34
 IMAGE      = $(REGISTRY)/$(IMAGE_NAME):$(VERSION)
 
 # ---------- Go module proxy ----------

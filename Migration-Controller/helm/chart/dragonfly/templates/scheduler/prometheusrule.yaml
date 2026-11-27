@@ -1,0 +1,21 @@
+{{- if and .Values.scheduler.metrics.enable .Values.scheduler.metrics.prometheusRule.enable }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ template "dragonfly.scheduler.fullname" . }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels:
+    app: {{ template "dragonfly.name" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: {{ .Values.scheduler.name }}
+    {{- if .Values.scheduler.metrics.prometheusRule.additionalLabels }}
+{{ toYaml .Values.scheduler.metrics.prometheusRule.additionalLabels | indent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ template "dragonfly.scheduler.fullname" $ }}
+      rules:
+{{ toYaml .Values.scheduler.metrics.prometheusRule.rules | indent 8 }}
+{{- end }}

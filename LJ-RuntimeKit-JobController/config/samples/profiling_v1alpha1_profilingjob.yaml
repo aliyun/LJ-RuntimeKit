@@ -1,0 +1,15 @@
+apiVersion: profiling.runtimekit.io/v1alpha1
+kind: ProfilingJob
+metadata:
+  name: gpu-profiling-job
+  namespace: inference
+spec:
+  targetSelector:
+    matchLabels:
+      app: vllm-inference
+  profilingMode: full
+  runIndex: 1
+  duration: 60s
+  persistentVolumeClaimName: test-storage
+  persistentVolumeClaimNamespace: inference
+  cancel: false

@@ -286,10 +286,10 @@ func TestCiAssumePod_InsufficientMemory(t *testing.T) {
 
 func TestCiAssumePod_MultipleSliceSizes(t *testing.T) {
 	tests := []struct {
-		name      string
-		sliceReq  string
-		sliceCap  uint
-		expectOk  bool
+		name     string
+		sliceReq string
+		sliceCap uint
+		expectOk bool
 	}{
 		{"slice_1_on_7ci", "1", 7, true},
 		{"slice_2_on_7ci", "2", 7, true},

@@ -35,6 +35,10 @@ const DefaultResourcePossibility = 100
 // are flagged by the scheduler with the whole card assigned flag.
 const WholeCardCore = 100
 
+// MigFactor is the factor carried by every MIG slice allocation. MIG mode has
+// no optional factor: xdm rejects the allocation without it.
+const MigFactor = 60
+
 // Resource names and related constants. Protocol-facing names are vars so
 // LoadProtocol can override them from the ConfigMap.
 var (
@@ -67,6 +71,15 @@ var (
 	AnnotationResourceAssumeTime = "ALIYUN_COM_GPU_MEM_ASSUME_TIME"
 	AnnotationDeviceIndex        = "ALIYUN_COM_GPU_IDX_LIST"
 
+	// ActiveMonitoring (SDC) detection-Pod wire constants, shared verbatim with the
+	// JobController and Scheduler. A detection Pod occupies a card without requesting any
+	// GPU resource: the controller pins it via AnnoActiveMonitoringTargetMinor and the
+	// runtime mounts the card through EnvXpuGPU. Before the DP hands a minor to a business
+	// Pod it evicts any detection Pod still pinned to that minor (fail-closed backstop).
+	LabelActiveMonitoring = "rt-diag"
+	// AnnoActiveMonitoringTargetMinor carries the GPU minor a detection Pod is pinned to.
+	AnnoActiveMonitoringTargetMinor = "rt-diag-target-minor"
+
 	// AnnotationAllocateID carries the allocate id generated in the Allocate
 	// stage; it correlates the allocation with the dp checkpoint record.
 	AnnotationAllocateID = "xdm.amp.com.id"
@@ -78,6 +91,14 @@ var (
 	LabelsFrontend = "vgpu.frontend"
 	LabelsReplicas = "vgpu.replicas"
 	LabelsBluffing = "vgpu.bluffing"
+	// LabelProfilingEnable set to "true" asks xdm to enable online profiling
+	// for the pod
+	LabelProfilingEnable = "rt-profiling-enable"
+	// LabelMigEnable set to "true" marks the pod's gpu-slice request as MIG
+	// instances. gpu-slice is a dual-mode resource: with the label it means MIG
+	// slices, without it the same request means MPS compute (TPC) slices, so
+	// this label is the only switch separating the two allocation modes.
+	LabelMigEnable = "rt_mig_enable"
 
 	AnnotationFrontendIp   = "ALIYUN_COM_FRONTEND_IP"
 	AnnotationFrontendPort = "ALIYUN_COM_FRONTEND_PORT"
@@ -103,11 +124,16 @@ var (
 	// RDMA devices into the container
 	AllocatePcieIndex = "pcie_index"
 
-	MigEnableKey     = "MigEnable"
-	MigEnableValue   = "true"
-	MigSliceKey      = "MigSlice"
-	MigSlice4        = "4"
-	MigSlice7        = "7"
+	MigEnableKey   = "MigEnable"
+	MigEnableValue = "true"
+	MigSliceKey    = "MigSlice"
+	MigSlice4      = "4"
+	MigSlice7      = "7"
+	// MpsSliceKey is the extender key carrying the MPS slice (TPC) count of a
+	// card. xdm reports it only when the card creates no MIG instance, so the
+	// slice resource takes MPS semantics whenever the key is present and falls
+	// back to MigSlice otherwise.
+	MpsSliceKey      = "MpsSlice"
 	DeviceMinor      = "DeviceMinor"
 	DeviceType       = "DeviceType"
 	MigType          = "Mig"

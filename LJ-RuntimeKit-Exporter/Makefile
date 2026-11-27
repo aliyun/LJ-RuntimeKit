@@ -16,49 +16,97 @@
 # LJ-Runtimekit-Exporter - Makefile
 # ==============================================================================
 
-VERSION        ?= v1.0.0
-# Builder image tag (registry.cn-hangzhou.aliyuncs.com/eflops-amp/golang).
+VERSION        ?= v1.14.0-k8s1.34
+# Go version used by the Debian Bullseye builder for host ABI compatibility.
 # Must be >= the `go` directive in go.mod, which dependencies pin to 1.21.
 GOLANG_VERSION := 1.21.13
 ARCH           := $(shell uname -m)
+PROTOC         ?= protoc
+GO             ?= go
+GOOS           ?= $(shell $(GO) env GOOS)
+GOARCH         ?= $(shell $(GO) env GOARCH)
 
-REGISTRY       ?= registry.cn-hangzhou.aliyuncs.com/eflops-amp/lj-runtimekit-exporter
-DOCKERCMD      := sudo DOCKER_BUILDKIT=1 docker build
+REGISTRY       ?= lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-exporter
+COLLECTOR_IMG  ?= lj-runtimekit-registry.cn-hangzhou.cr.aliyuncs.com/lj-runtimekit/lj-runtimekit-profiling-collector:$(VERSION)
+# ?= so CI or a non-interactive shell can drop the sudo prefix:
+#   make docker DOCKERCMD='DOCKER_BUILDKIT=1 docker build'
+DOCKERCMD      ?= sudo DOCKER_BUILDKIT=1 docker build
+COLLECTOR_OUTPUT ?= cmd/collector/profiling-collector
+COLLECTOR_BUILD_DIR := build/collector/$(GOOS)-$(GOARCH)
+DIST_DIR       ?= dist
+TEST_PACKAGES  := ./cmd/... ./pkg/... ./api/...
 
 # Module proxy used when resolving dependencies (this repo does not vendor).
-GOPROXY        ?= https://mirrors.aliyun.com/goproxy/,direct
+# goproxy.cn is kept as a fallback because the Aliyun mirror is missing a few
+# indirect modules (e.g. github.com/elazarl/goproxy), and `direct` is unreachable
+# from the internal build network.
+GOPROXY        ?= https://mirrors.aliyun.com/goproxy/,https://goproxy.cn/,direct
+# Export it so every recipe resolves modules through the mirror instead of the
+# host's default GOPROXY, which is unreachable from the internal build network.
+export GOPROXY
 
-.PHONY: help build vendor test test-verbose test-coverage docker clean
+.PHONY: help build build-exporter build-collector package-collector build-adapter generate-xdm vendor test test-collector test-verbose test-coverage docker docker-exporter docker-collector docker-all clean
 
 # Default target: show help
 help:
 	@echo "LJ-Runtimekit-Exporter Build System"
 	@echo ""
 	@echo "Build:"
-	@echo "  build           - Build exporter binary"
-	@echo "  vendor          - Generate vendor directory for offline builds"
+	@echo "  build             - Build exporter and profiling collector binaries"
+	@echo "  build-exporter    - Build exporter binary"
+	@echo "  build-adapter     - Build NPD adapter binary"
+	@echo "  build-collector   - Build standalone collector (GOOS/GOARCH supported)"
+	@echo "  package-collector - Package collector and license as a versioned tar.gz"
+	@echo "  generate-xdm      - Regenerate XDM protobuf bindings (requires protoc and Go plugins)"
+	@echo "  vendor            - Generate vendor directory for offline builds"
 	@echo ""
 	@echo "Test:"
-	@echo "  test            - Run unit tests"
-	@echo "  test-verbose    - Run unit tests with verbose output"
-	@echo "  test-coverage   - Run unit tests with coverage report"
+	@echo "  test              - Run all unit tests"
+	@echo "  test-collector    - Run standalone collector tests without GPU libraries"
+	@echo "  test-verbose      - Run unit tests with verbose output"
+	@echo "  test-coverage     - Run unit tests with coverage report"
 	@echo ""
 	@echo "Clean:"
-	@echo "  clean           - Remove build artifacts"
+	@echo "  clean             - Remove build artifacts"
 	@echo ""
 	@echo "Docker:"
-	@echo "  docker          - Build GPU exporter image"
+	@echo "  docker            - Build both images"
+	@echo "  docker-exporter   - Build GPU exporter image including the host NPD adapter"
+	@echo "  docker-collector  - Build standalone profiling collector image"
+	@echo "  docker-all        - Build both images (alias of docker)"
 
 # ==============================================================================
 # Build
 # ==============================================================================
 
-build:
-	cd cmd/exporter; go build -o exporter \
-		-ldflags "-X 'main.BuildVersion=${VERSION}'" -buildvcs=false
+build: build-exporter build-collector
+
+build-exporter:
+	$(GO) build -o cmd/exporter/exporter \
+		-ldflags "-X 'main.BuildVersion=${VERSION}'" -buildvcs=false ./cmd/exporter
+
+build-collector:
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build -trimpath \
+		-ldflags "-s -w -X 'main.BuildVersion=$(VERSION)'" -buildvcs=false \
+		-o "$(COLLECTOR_OUTPUT)" ./cmd/collector
+
+package-collector:
+	mkdir -p "$(COLLECTOR_BUILD_DIR)" "$(DIST_DIR)"
+	$(MAKE) build-collector COLLECTOR_OUTPUT="$(COLLECTOR_BUILD_DIR)/profiling-collector"
+	tar -czf "$(DIST_DIR)/profiling-collector-$(VERSION)-$(GOOS)-$(GOARCH).tar.gz" \
+		-C "$(COLLECTOR_BUILD_DIR)" profiling-collector -C "$(CURDIR)" LICENSE
+
+build-adapter:
+	cd cmd/rt_npd_adapter; $(GO) build -o rt_npd_adapter \
+		-ldflags "-s -w" -buildvcs=false
+
+# Use the existing generator versions: protoc-gen-go v1.28.0 and protoc-gen-go-grpc v1.2.0.
+generate-xdm:
+	$(PROTOC) -I=pkg/grpc/xdm --go_out=pkg/grpc/xdm --go_opt=paths=source_relative \
+		--go-grpc_out=pkg/grpc/xdm --go-grpc_opt=paths=source_relative pkg/grpc/xdm/api_outer.proto
 
 vendor:
-	GOPROXY=$(GOPROXY) go mod vendor
+	GOPROXY=$(GOPROXY) $(GO) mod vendor
 
 # ==============================================================================
 # Testing
@@ -66,26 +114,28 @@ vendor:
 
 test:
 	@echo "Running unit tests..."
-	go test ./pkg/common/... ./pkg/exporter/... -count=1
+	$(GO) test $(TEST_PACKAGES) -count=1
+
+test-collector:
+	CGO_ENABLED=0 $(GO) test ./cmd/collector/... ./pkg/collector/... ./pkg/safefs/... ./api/... -count=1
 
 test-verbose:
 	@echo "Running unit tests (verbose)..."
-	go test ./pkg/common/... ./pkg/exporter/... -v -count=1
+	$(GO) test $(TEST_PACKAGES) -v -count=1
 
 test-coverage:
 	@echo "Running unit tests with coverage..."
-	go test ./pkg/common/... ./pkg/exporter/... \
-		-coverprofile=coverage.out -count=1
-	go tool cover -func=coverage.out
+	$(GO) test $(TEST_PACKAGES) -coverprofile=coverage.out -count=1
+	$(GO) tool cover -func=coverage.out
 	@echo ""
 	@echo "HTML coverage report: coverage.html"
-	go tool cover -html=coverage.out -o coverage.html
+	$(GO) tool cover -html=coverage.out -o coverage.html
 
 # ==============================================================================
 # Docker Images
 # ==============================================================================
 
-docker:
+docker-exporter:
 	$(DOCKERCMD) \
 		--build-arg "AMPERF_VERSION=$(VERSION)" \
 		--build-arg "GOLANG_VERSION=$(GOLANG_VERSION)" \
@@ -93,10 +143,26 @@ docker:
 		--tag "$(REGISTRY):$(VERSION)" \
 		--file docker/Dockerfile .
 
+docker-collector:
+	$(DOCKERCMD) \
+		--build-arg "VERSION=$(VERSION)" \
+		--build-arg "GOLANG_VERSION=$(GOLANG_VERSION)" \
+		--build-arg "GOPROXY=$(GOPROXY)" \
+		--tag "$(COLLECTOR_IMG)" \
+		--file docker/Dockerfile.collector .
+
+docker: docker-exporter docker-collector
+
+# Kept as the historical name; `docker` is the primary entry point.
+docker-all: docker
+
 # ==============================================================================
 # Clean
 # ==============================================================================
 
 clean:
-	rm -rf cmd/exporter/exporter
-	rm -rf coverage.out coverage.html
+	rm -rf cmd/exporter/exporter cmd/rt_npd_adapter/rt_npd_adapter
+	rm -f "$(COLLECTOR_OUTPUT)"
+	rm -rf build/collector
+	rm -f "$(DIST_DIR)"/profiling-collector-*.tar.gz
+	rm -f coverage.out coverage.html

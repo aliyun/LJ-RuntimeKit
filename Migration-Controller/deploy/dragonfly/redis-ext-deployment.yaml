@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dragonfly-redis-ext
+  namespace: dragonfly
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dragonfly-redis-ext
+  template:
+    metadata:
+      labels:
+        app: dragonfly-redis-ext
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.2
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi

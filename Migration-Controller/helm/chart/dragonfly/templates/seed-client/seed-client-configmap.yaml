@@ -1,0 +1,53 @@
+{{- if .Values.seedClient.enable }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "dragonfly.seedClient.fullname" . }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels:
+    app: {{ template "dragonfly.fullname" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: {{ .Values.seedClient.name }}
+data:
+  dfdaemon.yaml: |-
+    host:
+{{ toYaml .Values.seedClient.config.host | indent 6 }}
+    server:
+{{ toYaml .Values.seedClient.config.server | indent 6 }}
+    download:
+{{ toYaml .Values.seedClient.config.download | indent 6 }}
+    upload:
+{{ toYaml .Values.seedClient.config.upload | indent 6 }}
+    manager:
+      {{- if .Values.seedClient.config.manager.addrs }}
+      addr: {{ .Values.seedClient.config.manager.addr }}
+      {{- else if .Values.manager.enable }}
+      addr: http://{{ template "dragonfly.manager.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.manager.grpcPort }}
+      {{- else }}
+      addr: http://{{ .Values.externalManager.host }}:{{ .Values.externalManager.grpcPort }}
+      {{- end }}
+    scheduler:
+{{ toYaml .Values.seedClient.config.scheduler | indent 6 }}
+    seedPeer:
+{{ toYaml .Values.seedClient.config.seedPeer | indent 6 }}
+    dynconfig:
+{{ toYaml .Values.seedClient.config.dynconfig | indent 6 }}
+    storage:
+{{ toYaml .Values.seedClient.config.storage | indent 6 }}
+    gc:
+{{ toYaml .Values.seedClient.config.gc | indent 6 }}
+    proxy:
+{{ toYaml .Values.seedClient.config.proxy | indent 6 }}
+    health:
+{{ toYaml .Values.seedClient.config.health | indent 6 }}
+    metrics:
+{{ toYaml .Values.seedClient.config.metrics | indent 6 }}
+    stats:
+{{ toYaml .Values.seedClient.config.stats | indent 6 }}
+    {{- if .Values.client.config.tracing }}
+    tracing:
+{{ toYaml .Values.client.config.tracing | indent 6 }}
+    {{- end }}
+{{- end }}

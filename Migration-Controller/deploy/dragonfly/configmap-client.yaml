@@ -1,0 +1,70 @@
+apiVersion: v1
+data:
+  dfdaemon.yaml: |-
+    host:
+      idc: ""
+      location: ""
+    server:
+      cacheDir: /var/cache/dragonfly/dfdaemon/
+      pluginDir: /var/lib/dragonfly/plugins/dfdaemon/
+    download:
+      concurrentPieceCount: 16
+      pieceTimeout: 30s
+      rateLimit: 50GiB
+      server:
+        requestRateLimit: 4000
+        socketPath: /var/run/dragonfly/dfdaemon.sock
+    upload:
+      disableShared: false
+      rateLimit: 50GiB
+      server:
+        port: 4000
+        requestRateLimit: 4000
+    manager:
+      addr: http://dragonfly-manager.dragonfly.svc.cluster.local:65003
+    scheduler:
+      addr: dragonfly-scheduler.dragonfly.svc.cluster.local:8002
+      announceInterval: 5m
+      enableBackToSource: true
+      maxScheduleCount: 5
+      scheduleTimeout: 30s
+    dynconfig:
+      refreshInterval: 5m
+    storage:
+      dir: /var/lib/dragonfly/
+      keep: true
+      readBufferSize: 4194304
+      writeBufferSize: 4194304
+    gc:
+      interval: 900s
+      policy:
+        distHighThresholdPercent: 80
+        distLowThresholdPercent: 60
+        taskTTL: 168h
+    proxy:
+      disableBackToSource: false
+      prefetch: false
+      prefetchRateLimit: 5GiB
+      readBufferSize: 4194304
+      registryMirror:
+        addr: https://index.docker.io
+      rules:
+      - regex: blobs/sha256.*
+      server:
+        port: 4001
+    health:
+      server:
+        port: 4003
+    metrics:
+      server:
+        port: 4002
+    stats:
+      server:
+        port: 4004
+kind: ConfigMap
+metadata:
+  labels:
+    app: dragonfly
+    component: client
+  name: dragonfly-client
+  namespace: dragonfly

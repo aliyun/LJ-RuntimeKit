@@ -1,0 +1,205 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: preheatjobs.migration.io
+spec:
+  group: migration.io
+  names:
+    kind: PreheatJob
+    listKind: PreheatJobList
+    plural: preheatjobs
+    shortNames:
+    - phj
+    singular: preheatjob
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: PreheatJob is the Schema for the preheatjobs API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PreheatJobSpec defines the desired state of PreheatJob
+
+              RemoteURL, CheckpointUID and Pvc are mutually exclusive: when only
+              CheckpointUID is filled, the controller resolves the preheat source from the
+              referenced checkpoint CR at reconcile time (storageType oss/dragonfly
+              resolves RemoteURL and OSS credentials; pvc resolves pvcName/pvcNamespace
+              and the PVC-internal path); the resolved result is used only for that round
+              and never written back to this CR's spec. Filling more than one is rejected
+              by controller validation in the Pending phase.
+
+              The mutual exclusion is not enforced at the CRD level: CEL
+              x-kubernetes-validations requires K8s 1.25+ while the target cluster is
+              1.23, so all fields stay optional and the controller validates in the
+              Pending phase.
+            properties:
+              checkpointUID:
+                description: |-
+                  CheckpointUID is the metadata.uid of the referenced checkpoint CR
+                  (ContainerStateMigrationJobRequest), same semantics as
+                  spec.restore.checkpointUID. Filling it avoids writing RemoteURL and the
+                  accessKeyId / accessKeySecret options.
+
+                  A checkpoint only dumps a single container, so the referenced checkpoint
+                  maps to exactly one object; no container needs to be specified.
+                type: string
+              options:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Options are extra optional parameters passed through to the preheat task.
+                  The dragonfly backend needs accessKeyId / accessKeySecret; if filled here
+                  they are used, otherwise taken from the storage options of the referenced
+                  checkpoint CR.
+
+                  The preheat mode is selected by these options: when target-pvc-name and
+                  target-pvc-namespace are both filled (non-empty), copy preheat (the copy
+                  backend, mutually exclusive with efc-enable); when efc-enable is "true"
+                  (case-insensitive), EFC preheat; otherwise the default Dragonfly preheat
+                  (dragonfly-enable is deprecated and ignored).
+                type: object
+              pvc:
+                description: |-
+                  Pvc directly specifies a PVC as the preheat source: under the Dragonfly
+                  backend the controller starts a preheat source pod mounting the PVC to
+                  serve the http origin and preheats the checkpoint directory inside the
+                  PVC into the seed peers; the EFC backend (efc-enable=true) starts no pod,
+                  the target_path is resolved from the PVC and goes through the warmup
+                  endpoint; the copy backend (options filled with
+                  target-pvc-name/target-pvc-namespace) starts a one-shot copy pod that
+                  copies the checkpoint directory inside the PVC to the same path on the
+                  target PVC.
+                properties:
+                  pvcName:
+                    description: PvcName is the PVC name.
+                    type: string
+                  pvcNamespace:
+                    description: PvcNamespace is the PVC namespace.
+                    type: string
+                  pvcPath:
+                    description: |-
+                      PvcPath is the relative path of the checkpoint directory inside the PVC
+                      (below the mount point /mnt/pv), e.g.
+                      {sourcePodUID}/{version}/{container}/checkpoint. It must be relative and
+                      contain no "."/".." segments, no empty segments and no backslashes
+                      (otherwise the preheat task fails directly); any character is allowed
+                      inside a segment - checkpoint data may be moved to user directories,
+                      paths containing spaces etc. are equally legal.
+                    type: string
+                required:
+                - pvcName
+                - pvcNamespace
+                - pvcPath
+                type: object
+              remoteURL:
+                description: |-
+                  RemoteURL is the full http(s) path of the remote OSS object, e.g.
+                  https://{bucket}.{ossEndpoint}/{objectName}.
+                type: string
+            type: object
+          status:
+            description: PreheatJobStatus defines the observed state of PreheatJob
+            properties:
+              efcPath:
+                description: |-
+                  EFCPath is the preheat directory composed by the EFC backend (relative
+                  path inside the bucket, e.g.
+                  chanke/migration-worker/<sourcePodUID>/<ts>/<container>/checkpoint). Only
+                  filled for EFC preheat; the restore-side worker reads it to compose the
+                  read path under /mnt/efc.
+                type: string
+              message:
+                description: Message is the status description or failure reason.
+                type: string
+              peerList:
+                description: PeerList is the list of nodes that successfully preheated.
+                items:
+                  description: PreheatPeerInfo describes one node that successfully
+                    preheated.
+                  properties:
+                    cached:
+                      description: Cached reports whether the file is still cached.
+                      type: boolean
+                    expiredAt:
+                      description: ExpiredAt is the expiry time.
+                      format: date-time
+                      type: string
+                    ip:
+                      description: IP is the node IP.
+                      type: string
+                    lastSeen:
+                      description: LastSeen is the last probe time.
+                      format: date-time
+                      type: string
+                    nodeName:
+                      description: NodeName is the node name.
+                      type: string
+                    state:
+                      description: |-
+                        State is the registration state of the seed peer in the Dragonfly
+                        scheduler; appearing in ListHosts results means active.
+                      type: string
+                  type: object
+                type: array
+              phase:
+                description: 'Phase is the current phase: Pending / Running / Ready
+                  / Failed / Stale.'
+                enum:
+                - Pending
+                - Running
+                - Probing
+                - Ready
+                - Failed
+                - Stale
+                type: string
+              remoteURL:
+                description: |-
+                  RemoteURL is the remote address actually used for preheat. When spec only
+                  fills pvc or checkpointUID, the controller resolves/generates it and pins
+                  it here (a PVC source looks like http://{preheat source Service
+                  ClusterIP}:{fixed port}/{pvcPath}), so ProbeController keeps probing the
+                  same URL after the preheat source pod is deleted (the task_id is
+                  computed from the URL and must match the preheat one exactly). The
+                  restore-side worker does not read this field: it derives the ClusterIP
+                  of the same Service from (pvcNamespace, pvcName, pvcPath) and rebuilds
+                  the URL.
+                type: string
+              taskID:
+                description: TaskID is the Dragonfly preheat task ID, used to poll
+                  the task status.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

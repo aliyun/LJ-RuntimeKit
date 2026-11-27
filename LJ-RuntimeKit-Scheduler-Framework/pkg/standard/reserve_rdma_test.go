@@ -44,11 +44,11 @@ import (
 // other methods will panic if called (they are not exercised in Reserve).
 type fakeHandle struct {
 	framework.Handle // embedded nil interface satisfies the type; overridden below
-	client     clientset.Interface
-	lister     framework.SharedLister
+	client           clientset.Interface
+	lister           framework.SharedLister
 }
 
-func (f *fakeHandle) ClientSet() clientset.Interface        { return f.client }
+func (f *fakeHandle) ClientSet() clientset.Interface               { return f.client }
 func (f *fakeHandle) SnapshotSharedLister() framework.SharedLister { return f.lister }
 
 // fakeSharedLister implements framework.SharedLister.
@@ -56,7 +56,15 @@ type fakeSharedLister struct {
 	nodeInfoLister framework.NodeInfoLister
 }
 
-func (f *fakeSharedLister) NodeInfos() framework.NodeInfoLister           { return f.nodeInfoLister }
+func (f *fakeSharedLister) NodeInfos() framework.NodeInfoLister { return f.nodeInfoLister }
+func (f *fakeSharedLister) StorageInfos() framework.StorageInfoLister {
+	return &fakeStorageInfoLister{}
+}
+
+// fakeStorageInfoLister implements framework.StorageInfoLister.
+type fakeStorageInfoLister struct{}
+
+func (f *fakeStorageInfoLister) IsPVCUsedByPods(key string) bool { return false }
 
 // fakeNodeInfoLister implements framework.NodeInfoLister.
 type fakeNodeInfoLister struct {
@@ -70,7 +78,9 @@ func (f *fakeNodeInfoLister) List() ([]*framework.NodeInfo, error) {
 	}
 	return result, nil
 }
-func (f *fakeNodeInfoLister) HavePodsWithAffinityList() ([]*framework.NodeInfo, error) { return nil, nil }
+func (f *fakeNodeInfoLister) HavePodsWithAffinityList() ([]*framework.NodeInfo, error) {
+	return nil, nil
+}
 func (f *fakeNodeInfoLister) HavePodsWithRequiredAntiAffinityList() ([]*framework.NodeInfo, error) {
 	return nil, nil
 }

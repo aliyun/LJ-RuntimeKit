@@ -1,0 +1,869 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: containerstatemigrationjobrequests.migration.io
+spec:
+  group: migration.io
+  names:
+    kind: ContainerStateMigrationJobRequest
+    listKind: ContainerStateMigrationJobRequestList
+    plural: containerstatemigrationjobrequests
+    shortNames:
+    - csmjr
+    singular: containerstatemigrationjobrequest
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: age
+      type: date
+    - jsonPath: .status.message
+      name: message
+      type: string
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: ContainerStateMigrationJobRequest is the Schema for the containerstatemigrationjobrequests
+          API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ContainerStateMigrationJobRequestSpec defines the desired
+              state
+            properties:
+              cancel:
+                description: Cancel is the cancellation flag.
+                type: boolean
+              checkpoint:
+                description: |-
+                  Checkpoint is the checkpoint configuration; the checkpoint stage is
+                  skipped when nil.
+                properties:
+                  containerCheckpointPolicy:
+                    additionalProperties:
+                      description: CheckpointPolicy defines the checkpoint policy
+                        of a single container.
+                      properties:
+                        advanceOptions:
+                          additionalProperties:
+                            type: string
+                          description: AdvanceOptions advanced options.
+                          type: object
+                        excludeFilepath:
+                          description: ExcludeFilepath excludes file/directory paths
+                            (absolute paths inside the container).
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    description: |-
+                      ContainerCheckpointPolicy is the fine-grained checkpoint policy keyed by
+                      container name.
+                    type: object
+                  containers:
+                    description: |-
+                      Containers lists the container names to checkpoint. Required, and only one
+                      container is allowed at present: the list type is kept for future
+                      multi-container support, but worker / XDM are single-container only, so
+                      filling zero or more than one is rejected by InitHandler validation.
+                    items:
+                      type: string
+                    type: array
+                  enableCheckpointAutoMode:
+                    description: EnableCheckpointAutoMode controls whether cr-tool runs
+                      in auto mode with --enable-auto-mode, detecting the
+                      steady-state point of the model service to trigger the
+                      checkpoint. Unset defaults to true.
+                    type: boolean
+                  sourcePodName:
+                    description: SourcePodName is the source pod name.
+                    type: string
+                  sourcePodNamespace:
+                    description: SourcePodNamespace is the namespace of the source
+                      pod.
+                    type: string
+                  sourcePodUID:
+                    description: SourcePodUID is the K8s UID of the source pod.
+                    type: string
+                  timeoutInMinute:
+                    description: TimeoutInMinute is the checkpoint timeout in minutes,
+                      passed through to cr-tool as --timeout <minutes> when
+                      explicitly set; unset passes no --timeout at all. An
+                      explicit 0 is passed through as --timeout 0, except on
+                      auto-created CRs (pod-annotation path) where it blocks
+                      the checkpoint stage with a warning. A negative value is
+                      rejected and written back to status.message.
+                    type: integer
+                required:
+                - sourcePodName
+                - sourcePodNamespace
+                - sourcePodUID
+                type: object
+              restore:
+                description: |-
+                  Restore is the restore configuration; the restore stage is skipped when
+                  nil.
+                properties:
+                  checkpointUID:
+                    description: |-
+                      CheckpointUID is the UID of the referenced checkpoint CRD.
+                      Required when checkpoint is nil; left empty when checkpoint exists.
+                    type: string
+                  containerRestorePolicy:
+                    additionalProperties:
+                      description: |-
+                        RestorePolicy defines the restore policy of a single container.
+
+                        Reserved for future extensions, currently no consumer: the restore path
+                        (proto RestoreFromStorageRequest -> worker -> XDM) has no passthrough
+                        channel for it yet, filling it has no effect. It is kept to reserve the slot
+                        for "per-container restore options" and to stay symmetric with
+                        CheckpointPolicy.
+
+                        Do not delete it as dead code just because no references are found.
+                      properties:
+                        advanceOptions:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            AdvanceOptions advanced options, reserved for future passthrough to
+                            worker / XDM.
+                          type: object
+                      type: object
+                    description: |-
+                      ContainerRestorePolicy is the fine-grained restore policy keyed by
+                      container name.
+
+                      Reserved for future extensions, currently disabled, see RestorePolicy;
+                      do not delete.
+                    type: object
+                  disableColdStartFallback:
+                    description: |-
+                      DisableColdStartFallback turns off the cold-start fallback: replicas that
+                      exhaust restore retries stay in ColdStarting instead of being replaced by
+                      a cold-started pod. The failing restore pod is kept in place - useful for
+                      debugging cr-tool failures on the live pod. Off by default (fallback on).
+                    type: boolean
+                  replicas:
+                    description: Replicas is the number of replica pods to restore.
+                    type: integer
+                  retryCount:
+                    default: 0
+                    description: |-
+                      RetryCount is the max retry count after a stage failure, >=0; 0=no retry.
+                      Download data / runc restore / restore XPU are three independently
+                      counted stages; when any stage exhausts its retries, the replica falls
+                      back to cold start (brought up normally from the source template).
+                      Retry counting and the "exhausted -> cold start" decision are owned by
+                      the controller: download and XPU retries are driven by the controller;
+                      runc restore retries are driven by kubelet in-place restarts (the
+                      controller counts restartCount). The cold-start fallback is always on;
+                      retryCount only controls the number of retries before cold start. The
+                      restore stage has no timeout.
+                    minimum: 0
+                    type: integer
+                required:
+                - replicas
+                type: object
+              storage:
+                description: Storage is the storage backend configuration.
+                properties:
+                  dragonfly:
+                    description: JobDragonfly defines the Dragonfly P2P storage backend.
+                    properties:
+                      endpoint:
+                        description: Endpoint is the dfdaemon gRPC address, e.g. "127.0.0.1:65000".
+                        type: string
+                      options:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Options are additional options (including OSS accessKeyId/accessKeySecret
+                          etc.).
+                        type: object
+                      ossEndpoint:
+                        description: OSSEndpoint is the OSS endpoint (for direct upload
+                          to OSS).
+                        type: string
+                      ossMountPoint:
+                        description: OSSMountPoint is the OSS mount point (for direct
+                          upload to OSS).
+                        type: string
+                      preheatJobName:
+                        description: |-
+                          PreheatJobName is the name of the associated PreheatJob CR (optional;
+                          preheat disabled when empty).
+                        type: string
+                      preheatJobNamespace:
+                        description: PreheatJobNamespace is the namespace of the associated
+                          PreheatJob CR.
+                        type: string
+                    type: object
+                  efc:
+                    description: |-
+                      JobEFC defines the EFC storage backend.
+
+                      EFC mounting and origin fetching are handled by the node-side runtimekit; the
+                      controller only passes through the bucket holding the checkpoint and the
+                      associated PreheatJob CR (so the worker can obtain preheat info through it).
+                    properties:
+                      bucketName:
+                        description: BucketName is the bucket holding the checkpoint.
+                        type: string
+                      options:
+                        additionalProperties:
+                          type: string
+                        description: Options are additional options.
+                        type: object
+                      preheatJobName:
+                        description: |-
+                          PreheatJobName is the name of the associated PreheatJob CR (optional;
+                          preheat disabled when empty).
+                        type: string
+                      preheatJobNamespace:
+                        description: PreheatJobNamespace is the namespace of the associated
+                          PreheatJob CR.
+                        type: string
+                    type: object
+                  local:
+                    description: JobLocal defines the local storage backend.
+                    properties:
+                      path:
+                        description: Path is the local storage path, the root directory
+                          for checkpoint data.
+                        type: string
+                    type: object
+                  nfs:
+                    description: JobNFS defines the NFS storage backend.
+                    properties:
+                      options:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      path:
+                        type: string
+                      server:
+                        type: string
+                    type: object
+                  oss:
+                    description: JobOSS defines the OSS storage backend.
+                    properties:
+                      endpoint:
+                        type: string
+                      mountPoint:
+                        type: string
+                      options:
+                        additionalProperties:
+                          type: string
+                        type: object
+                    type: object
+                  pvc:
+                    description: |-
+                      JobPVC defines the PVC direct-attach storage backend.
+
+                      The controller mounts the PVC when creating the task-level worker (fixed
+                      mount point /mnt/pv); checkpoint data is written directly into the mounted
+                      PVC and restore reads directly from the mounted PVC, no remote storage such
+                      as OSS/EFC involved. Which preheat path (Dragonfly or EFC) the restore reads
+                      take is decided by the worker command-line flag --pvc-preheat-backend,
+                      unrelated to the CR.
+                    properties:
+                      pvcName:
+                        description: PvcName is the name of the PVC to mount.
+                        type: string
+                      pvcNamespace:
+                        description: PvcNamespace is the namespace of the PVC.
+                        type: string
+                    type: object
+                type: object
+              storageType:
+                description: 'StorageType is the storage type: local, nfs, oss, dragonfly,
+                  efc, pvc.'
+                type: string
+            required:
+            - storage
+            - storageType
+            type: object
+          status:
+            description: ContainerStateMigrationJobRequestStatus defines the observed
+              state
+            properties:
+              checkpointStatus:
+                description: CheckpointStatus is the checkpoint sub-task status.
+                properties:
+                  conditions:
+                    description: Conditions are the checkpoint sub-status conditions.
+                    items:
+                      description: Condition contains details for one aspect of the
+                        current state of this API Resource.
+                      properties:
+                        lastTransitionTime:
+                          description: |-
+                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            message is a human readable message indicating details about the transition.
+                            This may be an empty string.
+                          maxLength: 32768
+                          type: string
+                        observedGeneration:
+                          description: |-
+                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                            with respect to the current state of the instance.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        reason:
+                          description: |-
+                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                            Producers of specific condition types may define expected values and meanings for this field,
+                            and whether the values are considered a guaranteed API.
+                            The value should be a CamelCase string.
+                            This field may not be empty.
+                          maxLength: 1024
+                          minLength: 1
+                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                          type: string
+                        status:
+                          description: status of the condition, one of True, False,
+                            Unknown.
+                          enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                          type: string
+                        type:
+                          description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                          maxLength: 316
+                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                          type: string
+                      required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                      type: object
+                    type: array
+                  containerMigrationStatuses:
+                    description: |-
+                      ContainerMigrationStatuses is the per-container checkpoint status
+                      (including results).
+                    items:
+                      description: ContainerMigrationStatus is the container migration
+                        status.
+                      properties:
+                        checkpointAttributes:
+                          description: CheckpointAttributes records the attributes
+                            of checkpoint data.
+                          properties:
+                            extras:
+                              additionalProperties:
+                                type: string
+                              description: Extras are other attributes.
+                              type: object
+                            fileCount:
+                              description: FileCount is the number of files.
+                              format: int64
+                              type: integer
+                            path:
+                              description: Path is the path.
+                              type: string
+                            size:
+                              description: Size is the file size in bytes.
+                              format: int64
+                              type: integer
+                            totalDuration:
+                              description: TotalDuration is the total elapsed time.
+                              format: int64
+                              type: integer
+                          type: object
+                        conditions:
+                          items:
+                            description: Condition contains details for one aspect
+                              of the current state of this API Resource.
+                            properties:
+                              lastTransitionTime:
+                                description: |-
+                                  lastTransitionTime is the last time the condition transitioned from one status to another.
+                                  This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                                format: date-time
+                                type: string
+                              message:
+                                description: |-
+                                  message is a human readable message indicating details about the transition.
+                                  This may be an empty string.
+                                maxLength: 32768
+                                type: string
+                              observedGeneration:
+                                description: |-
+                                  observedGeneration represents the .metadata.generation that the condition was set based upon.
+                                  For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                                  with respect to the current state of the instance.
+                                format: int64
+                                minimum: 0
+                                type: integer
+                              reason:
+                                description: |-
+                                  reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                                  Producers of specific condition types may define expected values and meanings for this field,
+                                  and whether the values are considered a guaranteed API.
+                                  The value should be a CamelCase string.
+                                  This field may not be empty.
+                                maxLength: 1024
+                                minLength: 1
+                                pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                                type: string
+                              status:
+                                description: status of the condition, one of True,
+                                  False, Unknown.
+                                enum:
+                                - "True"
+                                - "False"
+                                - Unknown
+                                type: string
+                              type:
+                                description: type of condition in CamelCase or in
+                                  foo.example.com/CamelCase.
+                                maxLength: 316
+                                pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                                type: string
+                            required:
+                            - lastTransitionTime
+                            - message
+                            - reason
+                            - status
+                            - type
+                            type: object
+                          type: array
+                        containerID:
+                          type: string
+                        name:
+                          type: string
+                        snapshotPath:
+                          description: |-
+                            SnapshotPath is the checkpoint data root directory (containing the
+                            rootfs/memory/xpu subdirectories); xpu-container-runtime reads the pod
+                            annotation migration.io/restore-data-path, this is only a status record.
+                          type: string
+                      type: object
+                    type: array
+                  message:
+                    description: Message is the status description.
+                    type: string
+                  phase:
+                    description: 'Phase is the current phase: Checkpointing -> Succeeded
+                      / Failed.'
+                    type: string
+                  sourceNodeIP:
+                    description: |-
+                      SourceNodeIP is the node IP of the source pod. The source pod may be
+                      deleted any time after checkpoint completes, after which the node to
+                      finish worker tasks on can no longer be looked up; it must be pinned in
+                      the checkpoint stage.
+                    type: string
+                  sourcePodTemplate:
+                    description: |-
+                      SourcePodTemplate is the reproducible configuration of the source pod, the
+                      only basis for rebuilding the target pod in the restore stage.
+
+                      Stored as a whole unvalidated object: the expanded PodSpec OpenAPI schema
+                      has seven thousand lines; putting it into the CRD would force the
+                      apiserver to run a full structural validation on every read/write, the
+                      cost is not worth the benefit. Schemaless + PreserveUnknownFields also
+                      keeps the embedded metadata from being pruned, so the name / namespace /
+                      labels / annotations needed by the target pod are read directly from the
+                      ObjectMeta here instead of keeping a separate copy.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                type: object
+              conditions:
+                description: Conditions are the overall conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              message:
+                description: Message is the overall status description.
+                type: string
+              phase:
+                description: Phase is the overall task phase.
+                type: string
+              requestID:
+                description: RequestID is the request ID (UUID).
+                type: string
+              restoreStatus:
+                description: RestoreStatus is the restore sub-task status.
+                properties:
+                  conditions:
+                    description: Conditions are the restore sub-status conditions.
+                    items:
+                      description: Condition contains details for one aspect of the
+                        current state of this API Resource.
+                      properties:
+                        lastTransitionTime:
+                          description: |-
+                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            message is a human readable message indicating details about the transition.
+                            This may be an empty string.
+                          maxLength: 32768
+                          type: string
+                        observedGeneration:
+                          description: |-
+                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                            with respect to the current state of the instance.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        reason:
+                          description: |-
+                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                            Producers of specific condition types may define expected values and meanings for this field,
+                            and whether the values are considered a guaranteed API.
+                            The value should be a CamelCase string.
+                            This field may not be empty.
+                          maxLength: 1024
+                          minLength: 1
+                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                          type: string
+                        status:
+                          description: status of the condition, one of True, False,
+                            Unknown.
+                          enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                          type: string
+                        type:
+                          description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                          maxLength: 316
+                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                          type: string
+                      required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                      type: object
+                    type: array
+                  destinations:
+                    description: Destinations is the restore status of each replica
+                      pod.
+                    items:
+                      description: JobDestinationStatus describes the restore status
+                        of a single replica pod.
+                      properties:
+                        coldStart:
+                          description: ColdStart is the cold-start fallback info (filled
+                            only on fallback).
+                          properties:
+                            reason:
+                              description: |-
+                                Reason is the reason triggering cold start (which stage, which attempt
+                                failed).
+                              type: string
+                            stage:
+                              description: |-
+                                Stage is the cold-start sub-stage: DeletingPod (waiting for the old pod
+                                to disappear) / CreatingPod (creating the cold-start pod) /
+                                WaitingRunning (waiting for the cold-start pod to come up).
+                              type: string
+                            startedAt:
+                              description: StartedAt is the moment cold start was
+                                entered.
+                              format: date-time
+                              type: string
+                          type: object
+                        containerMigrationStatuses:
+                          description: |-
+                            ContainerMigrationStatuses is the per-container restore status of this
+                            pod.
+                          items:
+                            description: ContainerMigrationStatus is the container
+                              migration status.
+                            properties:
+                              checkpointAttributes:
+                                description: CheckpointAttributes records the attributes
+                                  of checkpoint data.
+                                properties:
+                                  extras:
+                                    additionalProperties:
+                                      type: string
+                                    description: Extras are other attributes.
+                                    type: object
+                                  fileCount:
+                                    description: FileCount is the number of files.
+                                    format: int64
+                                    type: integer
+                                  path:
+                                    description: Path is the path.
+                                    type: string
+                                  size:
+                                    description: Size is the file size in bytes.
+                                    format: int64
+                                    type: integer
+                                  totalDuration:
+                                    description: TotalDuration is the total elapsed
+                                      time.
+                                    format: int64
+                                    type: integer
+                                type: object
+                              conditions:
+                                items:
+                                  description: Condition contains details for one
+                                    aspect of the current state of this API Resource.
+                                  properties:
+                                    lastTransitionTime:
+                                      description: |-
+                                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                                      format: date-time
+                                      type: string
+                                    message:
+                                      description: |-
+                                        message is a human readable message indicating details about the transition.
+                                        This may be an empty string.
+                                      maxLength: 32768
+                                      type: string
+                                    observedGeneration:
+                                      description: |-
+                                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                                        with respect to the current state of the instance.
+                                      format: int64
+                                      minimum: 0
+                                      type: integer
+                                    reason:
+                                      description: |-
+                                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                                        Producers of specific condition types may define expected values and meanings for this field,
+                                        and whether the values are considered a guaranteed API.
+                                        The value should be a CamelCase string.
+                                        This field may not be empty.
+                                      maxLength: 1024
+                                      minLength: 1
+                                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                                      type: string
+                                    status:
+                                      description: status of the condition, one of
+                                        True, False, Unknown.
+                                      enum:
+                                      - "True"
+                                      - "False"
+                                      - Unknown
+                                      type: string
+                                    type:
+                                      description: type of condition in CamelCase
+                                        or in foo.example.com/CamelCase.
+                                      maxLength: 316
+                                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                                      type: string
+                                  required:
+                                  - lastTransitionTime
+                                  - message
+                                  - reason
+                                  - status
+                                  - type
+                                  type: object
+                                type: array
+                              containerID:
+                                type: string
+                              name:
+                                type: string
+                              snapshotPath:
+                                description: |-
+                                  SnapshotPath is the checkpoint data root directory (containing the
+                                  rootfs/memory/xpu subdirectories); xpu-container-runtime reads the pod
+                                  annotation migration.io/restore-data-path, this is only a status record.
+                                type: string
+                            type: object
+                          type: array
+                        message:
+                          description: Message is the status description.
+                          type: string
+                        nodeIP:
+                          description: NodeIP is the node IP the pod is scheduled
+                            to.
+                          type: string
+                        phase:
+                          description: Phase is the restore phase of this pod.
+                          type: string
+                        phaseRetries:
+                          description: |-
+                            PhaseRetries is the per-stage retry counts and failure history (visible
+                            via describe).
+                          items:
+                            description: PhaseRetryStatus is the retry count and history
+                              of a single stage.
+                            properties:
+                              attempts:
+                                description: |-
+                                  Attempts is the number of failures of this stage so far (excluding the
+                                  attempt in progress).
+                                type: integer
+                              history:
+                                description: History is the detail of each failure
+                                  (chronological).
+                                items:
+                                  description: RestoreAttempt is the detail of one
+                                    failure.
+                                  properties:
+                                    message:
+                                      description: Message is the failure detail.
+                                      type: string
+                                    reason:
+                                      description: Reason is the failure classification
+                                        (e.g. "RestoreFromStorage rejected").
+                                      type: string
+                                    time:
+                                      description: Time is the failure time.
+                                      format: date-time
+                                      type: string
+                                  type: object
+                                type: array
+                              maxRetry:
+                                description: MaxRetry is the snapshot of retryCount
+                                  at that time.
+                                type: integer
+                              phase:
+                                description: Phase identifies the stage.
+                                type: string
+                            required:
+                            - attempts
+                            - maxRetry
+                            - phase
+                            type: object
+                          type: array
+                        pod:
+                          description: Pod is the pod info.
+                          properties:
+                            ip:
+                              type: string
+                            name:
+                              type: string
+                            namespace:
+                              type: string
+                            nodeName:
+                              type: string
+                            uid:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              type: string
+                          type: object
+                        startupMode:
+                          description: |-
+                            StartupMode records whether this replica came up "from checkpoint
+                            restore" or "cold-start fallback"; only meaningful after the replica
+                            reaches a terminal state.
+                          type: string
+                      type: object
+                    type: array
+                  failedCount:
+                    description: FailedCount is the number of failed restore pods.
+                    type: integer
+                  message:
+                    description: Message is the status description.
+                    type: string
+                  phase:
+                    description: |-
+                      Phase is the current phase: Pending (replica pods to be created) ->
+                      Restoring (replicas created, pulling data / waiting for containers to
+                      settle) -> Succeeded / PartiallySucceeded / Failed.
+                    type: string
+                  succeededCount:
+                    description: SucceededCount is the number of successfully restored
+                      pods.
+                    type: integer
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,336 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: profilingjobs.profiling.runtimekit.io
+spec:
+  group: profiling.runtimekit.io
+  names:
+    kind: ProfilingJob
+    listKind: ProfilingJobList
+    plural: profilingjobs
+    shortNames:
+    - pj
+    singular: profilingjob
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.runIndex
+      name: RunIndex
+      type: integer
+    - jsonPath: .status.lastRunIndex
+      name: LastRun
+      type: integer
+    - jsonPath: .spec.profilingMode
+      name: Mode
+      type: string
+    - jsonPath: .spec.duration
+      name: Duration
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ProfilingJob controls GPU profiling and direct PVC output for
+          a set of Pods.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ProfilingJobSpec defines the desired state of ProfilingJob.
+            properties:
+              cancel:
+                default: false
+                description: |-
+                  Cancel stops active rounds as Canceled; CleanupComplete reports Pod deletion.
+                  Resumes and new rounds wait until all associated collectors are removed.
+                type: boolean
+              duration:
+                description: |-
+                  Duration is the full collection time for every target retry and resume.
+                  A value above the limit of spec.profilingMode (full 15s, lightweight 60s)
+                  is truncated to that limit when the round freezes status.runConfig.
+                maxLength: 32
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: duration must parse into int64 nanoseconds (at most 2562047h)
+                  rule: duration(self) <= duration('2562047h')
+              persistentVolumeClaimName:
+                description: PersistentVolumeClaimName is mounted directly by collector
+                  Pods. Immutable.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: persistentVolumeClaimName is immutable
+                  rule: self == oldSelf
+              persistentVolumeClaimNamespace:
+                description: PersistentVolumeClaimNamespace is the namespace of the
+                  PVC and collectors. Immutable.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: persistentVolumeClaimNamespace is immutable
+                  rule: self == oldSelf
+              profilingMode:
+                default: lightweight
+                description: ProfilingMode is the collection granularity.
+                enum:
+                - lightweight
+                - full
+                type: string
+              profilingRules:
+                description: |-
+                  ProfilingRules references a ProfilingRule that defines the collection
+                  policy (kernels to collect, trigger conditions, ...). Reserved for a
+                  future version.
+                type: string
+              runIndex:
+                description: |-
+                  RunIndex numbers profiling rounds. The value at creation, including 0,
+                  starts the first round; each later increase starts a new round. Each
+                  update may keep it unchanged or increase it by exactly 1.
+                format: int64
+                minimum: 0
+                type: integer
+                x-kubernetes-validations:
+                - message: runIndex can only stay unchanged or increase by 1
+                  rule: self == oldSelf || self == oldSelf + 1
+              targetSelector:
+                description: TargetSelector selects the Pods to profile. Immutable.
+                properties:
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: MatchLabels selects target Pods by label.
+                    type: object
+                  podName:
+                    description: PodName is the name of a single target Pod.
+                    minLength: 1
+                    type: string
+                  podNamespace:
+                    description: PodNamespace is the namespace of the Pod referenced
+                      by podName.
+                    minLength: 1
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: targetSelector is immutable
+                  rule: self == oldSelf
+                - message: exactly one of matchLabels or podName+podNamespace must
+                    be specified
+                  rule: (has(self.matchLabels) && size(self.matchLabels) > 0) != has(self.podName)
+                - message: podName and podNamespace must be specified together
+                  rule: has(self.podName) == has(self.podNamespace)
+            required:
+            - duration
+            - persistentVolumeClaimName
+            - persistentVolumeClaimNamespace
+            - runIndex
+            - targetSelector
+            type: object
+          status:
+            properties:
+              collectedDuration:
+                description: |-
+                  CollectedDuration 是本次采集从 startTime 到当前时间或终态 endTime 的墙钟耗时（毫秒）。
+                  collector 尚未运行时为 0，不累加此前采集或取消后等待恢复的时间。
+                format: int64
+                type: integer
+              endTime:
+                description: EndTime 是本次采集的结束时间；恢复时清空。
+                format: date-time
+                type: string
+              history:
+                description: History keeps the most recent finished rounds; older
+                  ones are pruned.
+                items:
+                  description: HistoryEntry records a finished profiling round.
+                  properties:
+                    collectedDuration:
+                      description: CollectedDuration is the collected time in milliseconds.
+                      format: int64
+                      type: integer
+                    endTime:
+                      format: date-time
+                      type: string
+                    outputLocation:
+                      type: string
+                    phase:
+                      description: ProfilingPhase is the lifecycle phase of the current
+                        profiling round.
+                      enum:
+                      - Pending
+                      - Running
+                      - Completed
+                      - Failed
+                      - Canceled
+                      type: string
+                    runIndex:
+                      format: int64
+                      type: integer
+                    startTime:
+                      format: date-time
+                      type: string
+                  required:
+                  - phase
+                  - runIndex
+                  type: object
+                type: array
+              lastRunIndex:
+                description: |-
+                  LastRunIndex is the latest spec.runIndex that has been picked up; unset
+                  until the first round starts.
+                format: int64
+                type: integer
+              message:
+                description: |-
+                  Message 描述当前进度、等待或失败原因；清理诊断附加在结果之后。
+                  仅用于诊断，不作为恢复、新轮次或 finalizer 放行的依据。
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              outputLocation:
+                description: |-
+                  OutputLocation is the current round's directory relative to the PVC
+                  volume root, set once its first collector starts running.
+                type: string
+              phase:
+                description: Phase of the current round.
+                enum:
+                - Pending
+                - Running
+                - Completed
+                - Failed
+                - Canceled
+                type: string
+              runConfig:
+                description: RunConfig freezes mutable CR inputs across retries and
+                  canceled-round resumes.
+                properties:
+                  duration:
+                    maxLength: 32
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: duration must parse into int64 nanoseconds (at most
+                        2562047h)
+                      rule: duration(self) <= duration('2562047h')
+                  profilingMode:
+                    description: ProfilingMode is the collection granularity.
+                    enum:
+                    - lightweight
+                    - full
+                    type: string
+                  profilingRules:
+                    type: string
+                required:
+                - duration
+                - profilingMode
+                type: object
+              startTime:
+                description: StartTime 是本次采集第一个 collector 容器开始运行的时间；恢复时清空并重记。
+                format: date-time
+                type: string
+              targets:
+                description: Targets is the per-Pod progress of the latest collection.
+                items:
+                  description: |-
+                    TargetStatus tracks one selected Pod. The target set is fixed when a round
+                    (or a resumed collection) resolves its Pods.
+                  properties:
+                    collectedDuration:
+                      description: CollectedDuration is the duration reported by Runtime
+                        Kit in milliseconds.
+                      format: int64
+                      type: integer
+                    collectorCreatedAt:
+                      format: date-time
+                      type: string
+                    collectorPodName:
+                      type: string
+                    collectorPodUID:
+                      type: string
+                    message:
+                      type: string
+                    outputFiles:
+                      description: |-
+                        OutputFiles are this target's data files, as paths relative to the PVC
+                        volume root, set when the target completes.
+                      items:
+                        type: string
+                      type: array
+                    reason:
+                      type: string
+                    retryAt:
+                      format: date-time
+                      type: string
+                    retryCount:
+                      format: int32
+                      type: integer
+                    stage:
+                      description: TargetStage is the progress of one target Pod within
+                        a round.
+                      enum:
+                      - Queued
+                      - Collecting
+                      - Retrying
+                      - Completed
+                      - Failed
+                      - Canceled
+                      type: string
+                    targetContainerIds:
+                      description: TargetContainerIds 是待采集 GPU 容器的运行时 ID，按 ID 排序。
+                      items:
+                        type: string
+                      type: array
+                    targetName:
+                      type: string
+                    targetNamespace:
+                      type: string
+                    targetNodeName:
+                      type: string
+                    targetUID:
+                      type: string
+                  required:
+                  - stage
+                  - targetContainerIds
+                  - targetName
+                  - targetNamespace
+                  - targetNodeName
+                  - targetUID
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

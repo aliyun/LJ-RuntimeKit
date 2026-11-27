@@ -32,12 +32,14 @@ const (
 	normalAssigned assignedFlag = 0
 	vcoreAssigned  assignedFlag = 1
 	vmemAssigned   assignedFlag = 2
+	sliceAssigned  assignedFlag = 3
 )
 
 var patchAnnotationRes2AssignedFlag = map[assignedFlag]string{
 	normalAssigned: utils.AnnoNormalGpuAssignedFlag,
 	vcoreAssigned:  utils.AnnoCoreAssignedFlag,
 	vmemAssigned:   utils.AnnoMemoryAssignedFlag,
+	sliceAssigned:  utils.AnnotationSliceAssignedFlag,
 }
 
 // patchPodAssigned builds a JSON patch to annotate a pod with assigned device info.
